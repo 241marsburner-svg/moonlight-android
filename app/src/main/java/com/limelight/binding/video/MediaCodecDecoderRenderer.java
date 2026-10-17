@@ -148,6 +148,11 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     private final AsyncCodecAdapter asyncCodec = new AsyncCodecAdapter();
 
     private boolean computeAsyncPreferLowerDelaysFromCurrentPrefs(int effectivePacing) {
+        // TV smooth must see every decoded frame; "latest only" would throw bunched frames away.
+        if (effectivePacing == PreferenceConfiguration.FRAME_PACING_TV_SMOOTH) {
+            return false;
+        }
+
         // Default heuristic (NOT tied to immediateFrameDelivery):
         // - Latency-oriented profiles benefit from "latest-only" output behavior.
         // - Smoothness-oriented profiles should keep the bounded queue behavior.
@@ -199,6 +204,16 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     };
 
     // ==== End Nano Pacer  ====
+
+    // ==== Artemide TV ====
+    // "TV smooth" pacing: evenly spaced presentation times, buffer lives in SurfaceFlinger
+    private final TvFramePacer tvPacer = new TvFramePacer();
+    // Counts frames the display really showed (MediaCodec frame-rendered callbacks)
+    private HandlerThread frameRenderedThread;
+    private Handler frameRenderedHandler;
+    // Upper bound for waiting on a free decoder input buffer before giving up on the frame
+    private static final long PATIENT_INPUT_WAIT_BUDGET_NS = 100_000_000L; // 100 ms
+    // ==== End Artemide TV ====
 
 
     private int nextInputBufferIndex = -1;
@@ -661,6 +676,11 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         this.perfListener = perfListener;
         this.coldCfg.invertResolution = invertResolution;
 
+        // Artemide TV: per-session diagnostics, pacer cadence and decoder hint policy
+        TvDiagnostics.resetVideo();
+        tvPacer.setStreamFps((prefs != null && prefs.fps > 0) ? prefs.fps : 60f);
+        MediaCodecHelper.setMtkFullSpeedHints(prefs != null && prefs.mtkFullSpeedHints);
+
         this.activeWindowVideoStats = new VideoStats();
         this.lastWindowVideoStats = new VideoStats();
         this.globalVideoStats = new VideoStats();
@@ -987,6 +1007,11 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         // Start the decoder
         videoDecoder.start();
         MediaCodecHelper.applyFrameworkLowLatencyPostStart(videoDecoder);
+
+        // Artemide TV: a (re)configured decoder starts a fresh presentation schedule,
+        // and we want to know which frames really reach the screen.
+        tvPacer.reset();
+        installFrameRenderedListener();
 // Diagnostics: dump negotiated input/output formats and check vendor keys acceptance
         try {
             MediaFormat __inF = videoDecoder.getInputFormat();
@@ -1000,6 +1025,42 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
             coldCfg.legacyInputBuffers = videoDecoder.getInputBuffers();
+        }
+    }
+
+    // Artemide TV: count frames the display actually showed and the gaps between them.
+    private void installFrameRenderedListener() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || videoDecoder == null) {
+            return;
+        }
+        if (!BuildConfig.TV_BUILD &&
+                !(prefs != null && prefs.framePacing == PreferenceConfiguration.FRAME_PACING_TV_SMOOTH)) {
+            return;
+        }
+
+        try {
+            if (frameRenderedThread == null) {
+                frameRenderedThread = new HandlerThread("Video - Rendered", Process.THREAD_PRIORITY_DISPLAY);
+                frameRenderedThread.start();
+                frameRenderedHandler = new Handler(frameRenderedThread.getLooper());
+            }
+            videoDecoder.setOnFrameRenderedListener(
+                    (codec, presentationTimeUs, nanoTime) -> {
+                        TvDiagnostics.onFrameDisplayed(nanoTime);
+                        tvPacer.onFrameRendered(presentationTimeUs, nanoTime);
+                    },
+                    frameRenderedHandler);
+        } catch (Throwable t) {
+            LimeLog.warning("Unable to install frame-rendered listener: " + t);
+        }
+    }
+
+    private void stopFrameRenderedThread() {
+        final HandlerThread t = frameRenderedThread;
+        frameRenderedThread = null;
+        frameRenderedHandler = null;
+        if (t != null) {
+            try { t.quitSafely(); } catch (Throwable ignored) { }
         }
     }
 
@@ -1102,6 +1163,14 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         coldCfg.adaptivePlayback = MediaCodecHelper.decoderSupportsAdaptivePlayback(selectedDecoderInfo, mimeType);
         coldCfg.fusedIdrFrame = MediaCodecHelper.decoderSupportsFusedIdrFrame(selectedDecoderInfo, mimeType);
 
+        // Artemide TV diagnostics: what the decoder claims and which hints it will get
+        try {
+            TvDiagnostics.setDecoderLowLatencyFeature(
+                    MediaCodecHelper.decoderAdvertisesLowLatency(selectedDecoderInfo, mimeType));
+            TvDiagnostics.setMtkFullSpeedHintsApplied(prefs != null && prefs.mtkFullSpeedHints &&
+                    MediaCodecHelper.isMtkDecoder(selectedDecoderInfo.getName()));
+        } catch (Throwable ignored) { }
+
         for (int tryNumber = 0;; tryNumber++) {
             LimeLog.info("Decoder configuration try: "+tryNumber);
 
@@ -1117,6 +1186,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             // Throw the underlying codec exception on the last attempt if the caller requested it
             if (tryConfigureDecoder(selectedDecoderInfo, mediaFormat, !newFormat && throwOnCodecError)) {
                 // Success!
+                TvDiagnostics.setDecoderConfigTry(tryNumber);
                 break;
             }
 
@@ -1226,6 +1296,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                 // If we just need a flush, do so now with all threads quiesced.
                 if (codecRecoveryType.get() == CR_RECOVERY_TYPE_FLUSH) {
                     LimeLog.warning("Flushing decoder");
+                    tvPacer.reset();
                     try {
                         videoDecoder.flush();
 
@@ -1564,6 +1635,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
                     if (released) {
                         lastRenderedFrameTimeNanos = frameTimeNanos;
+                        TvDiagnostics.onFrameReleased();
                         if (activeWindowVideoStats != null) {
                             activeWindowVideoStats.totalFramesRendered++;
                         }
@@ -1770,7 +1842,9 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                             // outputs, discard stale frames, and retain only the newest one.
                             // The cap prevents the renderer from chasing a decoder that keeps
                             // producing frames while old buffers are released.
-                            if (!useAsyncCodec && syncLfrEnabled) {
+                            // (Never in TV smooth: it shows every frame and handles bunches itself.)
+                            if (!useAsyncCodec && syncLfrEnabled &&
+                                    pacingMode != PreferenceConfiguration.FRAME_PACING_TV_SMOOTH) {
                                 int drained = 0;
 
                                 while (drained < SYNC_LFR_MAX_DRAIN_PER_TICK &&
@@ -1826,7 +1900,8 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                                 final boolean eos =
                                         (lastFlags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
 
-                                final boolean useNanoPacer = (prefs != null && prefs.fastVsync);
+                                final boolean useNanoPacer = (prefs != null && prefs.fastVsync) &&
+                                        pacingMode != PreferenceConfiguration.FRAME_PACING_TV_SMOOTH;
 
                                 if (useNanoPacer) {
                                     final float rrHz =
@@ -1980,6 +2055,21 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                         if (quickBackoffUs > 0) {
                             nextInputBufferIndex = nextInputIndex(quickBackoffUs);
                         }
+
+                        // Artemide TV: keep waiting (bounded) for the decoder to free an input
+                        // buffer. Giving up here throws the frame away and asks the PC for a
+                        // keyframe, which over Wi-Fi turns one late buffer into a visible hitch.
+                        if (nextInputBufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER &&
+                                prefs != null && prefs.patientDecoderInput) {
+                            while (nextInputBufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER &&
+                                    !stopping &&
+                                    !Thread.currentThread().isInterrupted() &&
+                                    codecRecoveryType.get() == CR_RECOVERY_TYPE_NONE &&
+                                    (System.nanoTime() - t0) < PATIENT_INPUT_WAIT_BUDGET_NS) {
+                                nextInputBufferIndex = nextInputIndex(2000);
+                            }
+                            TvDiagnostics.onInputWait(System.nanoTime() - t0);
+                        }
                     }
                 }
             }
@@ -2108,6 +2198,23 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         initFramePacingFromSettings();
         startRendererThread();
         startChoreographerThread();
+        startTvVsyncClockIfNeeded();
+    }
+
+    // Artemide TV: the refresh grid TV smooth pacing snaps frames to
+    private void startTvVsyncClockIfNeeded() {
+        if (prefs == null || prefs.framePacing != PreferenceConfiguration.FRAME_PACING_TV_SMOOTH) {
+            return;
+        }
+        try {
+            android.view.Display display = null;
+            if (activity != null) {
+                display = activity.getWindowManager().getDefaultDisplay();
+            }
+            tvPacer.startVsyncClock(display);
+        } catch (Throwable t) {
+            LimeLog.warning("Unable to start TV vsync clock: " + t);
+        }
     }
 
     // !!! May be called even if setup()/start() fails !!!
@@ -2159,6 +2266,11 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             videoDecoder = null;
         }
 
+        // Artemide TV: the frame-rendered callback and vsync threads are no longer needed
+        stopFrameRenderedThread();
+        tvPacer.stopVsyncClock();
+        tvPacer.reset();
+
         perfOverlayComposer.reset();
 
         // Stop any active codec recovery operations
@@ -2197,6 +2309,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         if ("gpu-raw".equals(v)) return PreferenceConfiguration.FRAME_PACING_GPU_RAW;
         if ("warp".equals(v)) return PreferenceConfiguration.FRAME_PACING_WARP;
         if ("warp2".equals(v)) return PreferenceConfiguration.FRAME_PACING_WARP2;
+        if ("tv".equals(v)) return PreferenceConfiguration.FRAME_PACING_TV_SMOOTH;
 
         return PreferenceConfiguration.FRAME_PACING_MIN_LATENCY;
     }
@@ -2296,8 +2409,16 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             startChoreographerThread();
         }
 
+        // Artemide TV: the refresh grid is only needed while TV smooth is active
+        if (newPacing == PreferenceConfiguration.FRAME_PACING_TV_SMOOTH) {
+            startTvVsyncClockIfNeeded();
+        } else if (oldPacing == PreferenceConfiguration.FRAME_PACING_TV_SMOOTH) {
+            tvPacer.stopVsyncClock();
+        }
+
         // Reset pacing state so deadlines/counters don't carry across modes
         nanoPacer.reset();
+        tvPacer.reset();
         // Re-tune OS thread priorities for the new pacing mode.
         applyVideoThreadPriorities();
         applyUpscalerThreadPrioritiesIfSupported();
@@ -2554,6 +2675,9 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             try { videoDecoder.release(); } catch (Throwable ignored) {}
             videoDecoder = null;
         }
+
+        stopFrameRenderedThread();
+        tvPacer.stopVsyncClock();
     }
 
     @Override
@@ -3552,6 +3676,20 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
     // Helper method for buffer release based on mode
     private void releaseBufferAccordingToMode(int bufferIndex, long presentationTimeUs) {
+        TvDiagnostics.onFrameReleased();
+
+        if (prefs.framePacing == PreferenceConfiguration.FRAME_PACING_TV_SMOOTH) {
+            // Hand the frame to SurfaceFlinger right away with an evenly spaced presentation
+            // time; SurfaceFlinger holds it until then (see TvFramePacer).
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                final long targetNs = tvPacer.scheduleNextFrame(System.nanoTime(), presentationTimeUs);
+                releaseOutputBufferAtTimeLockedLollipop(videoDecoder, bufferIndex, targetNs);
+            } else {
+                releaseOutputBufferRenderLocked(videoDecoder, bufferIndex, true);
+            }
+            return;
+        }
+
         if (prefs.framePacing == PreferenceConfiguration.FRAME_PACING_GPU_RAW) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 final long tsNs = System.nanoTime();
@@ -3781,6 +3919,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             case PreferenceConfiguration.FRAME_PACING_GPU_RAW:
             case PreferenceConfiguration.FRAME_PACING_WARP:
             case PreferenceConfiguration.FRAME_PACING_WARP2:
+            case PreferenceConfiguration.FRAME_PACING_TV_SMOOTH:
                 return Process.THREAD_PRIORITY_URGENT_DISPLAY;
 
             case PreferenceConfiguration.FRAME_PACING_BALANCED:

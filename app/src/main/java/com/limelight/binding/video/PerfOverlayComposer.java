@@ -312,6 +312,14 @@ public final class PerfOverlayComposer {
             // Decode time and end-to-end latency
             sb.append(context.getString(R.string.perf_overlay_dectime, decodeTimeMs));
             sb.append(context.getString(R.string.perf_overlay_lite_e2e, e2eTotalMs));
+
+            // Artemide TV: where frames and audio get lost after they arrive
+            if (com.limelight.BuildConfig.TV_BUILD ||
+                    prefsSnapshot.framePacing == PreferenceConfiguration.FRAME_PACING_TV_SMOOTH) {
+                try {
+                    sb.append(TvDiagnostics.buildOverlayBlock(context, prefsSnapshot));
+                } catch (Throwable ignored) { }
+            }
         }
 
         final String fullLog = sb.toString();
@@ -360,6 +368,8 @@ public final class PerfOverlayComposer {
             glyph.append('W');
         } else if (p.framePacing == PreferenceConfiguration.FRAME_PACING_WARP2) {
             glyph.append('2');
+        } else if (p.framePacing == PreferenceConfiguration.FRAME_PACING_TV_SMOOTH) {
+            glyph.append('T');
         } else {
             glyph.append('?');
         }

@@ -127,6 +127,7 @@
         <item>@string/pacing_balanced_alt</item>
         <item>@string/pacing_smoothness</item>
         <item>@string/pacing_gpu_raw</item>
+        <item>@string/pacing_tv_smooth</item>
     </string-array>
     <string-array name="video_frame_pacing_values" translatable="false">
         <item>warp2</item>
@@ -136,6 +137,18 @@
         <item>cap-fps</item>
         <item>smoothness</item>
         <item>gpu-raw</item>
+        <item>tv</item>
+    </string-array>
+
+    <string-array name="audio_buffer_mode_names">
+        <item>@string/audio_buffer_low_latency</item>
+        <item>@string/audio_buffer_normal</item>
+        <item>@string/audio_buffer_large</item>
+    </string-array>
+    <string-array name="audio_buffer_mode_values" translatable="false">
+        <item>lowlatency</item>
+        <item>normal</item>
+        <item>large</item>
     </string-array>
 
     <string-array name="analog_scrolling_names">

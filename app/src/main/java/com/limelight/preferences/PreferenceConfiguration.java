@@ -46,6 +46,26 @@ public class PreferenceConfiguration {
         return v;
     }
 
+    // --- TV tuning (Artemide TV build) ---
+
+    // Audio output buffer: "lowlatency" (phone default), "normal" (TV) or "large"
+    public static final String AUDIO_BUFFER_MODE_PREF_STRING = "list_audio_buffer_mode";
+    public static final String AUDIO_BUFFER_LOW_LATENCY = "lowlatency";
+    public static final String AUDIO_BUFFER_NORMAL = "normal";
+    public static final String AUDIO_BUFFER_LARGE = "large";
+    private static final String DEFAULT_AUDIO_BUFFER_MODE = AUDIO_BUFFER_LOW_LATENCY;
+    public String audioBufferMode = DEFAULT_AUDIO_BUFFER_MODE;
+
+    // Always send MediaTek's "run at full speed" decoder hints, even if the decoder
+    // advertises Android's standard low-latency feature
+    public static final String MTK_FULL_SPEED_HINTS_PREF_STRING = "checkbox_mtk_full_speed_hints";
+    private static final boolean DEFAULT_MTK_FULL_SPEED_HINTS = false;
+    public boolean mtkFullSpeedHints = DEFAULT_MTK_FULL_SPEED_HINTS;
+
+    // Wait patiently for a free decoder input buffer instead of dropping the frame and
+    // requesting a keyframe after ~5 ms. Always on in the TV build.
+    public boolean patientDecoderInput = false;
+
     // CpuWarmUp (read from prefs)
     public boolean cpuWarmUpEnable;
 
@@ -311,6 +331,10 @@ public class PreferenceConfiguration {
     public static final int FRAME_PACING_GPU_RAW = 4;
     public static final int FRAME_PACING_WARP = 5;
     public static final int FRAME_PACING_WARP2 = 6;
+    // TV smooth: every decoded frame is handed to the display with an evenly spaced
+    // presentation time (a small jitter buffer that lives in SurfaceFlinger), so frames
+    // that arrive in bunches over Wi-Fi are shown one per refresh instead of dropped.
+    public static final int FRAME_PACING_TV_SMOOTH = 7;
     public static final String RES_360P = "640x360";
     public static final String RES_480P = "854x480";
     public static final String RES_720P = "1280x720";
@@ -805,6 +829,8 @@ public class PreferenceConfiguration {
             return FRAME_PACING_WARP;
         } else if ("warp2".equals(str)) {
             return FRAME_PACING_WARP2;
+        } else if ("tv".equals(str)) {
+            return FRAME_PACING_TV_SMOOTH;
         } else {
             return FRAME_PACING_MIN_LATENCY;
         }
@@ -1186,6 +1212,14 @@ public class PreferenceConfiguration {
         config.decoderOutputDequeueTimeoutUs =
                 clampInt(prefs.getInt(DECODER_OUTPUT_DEQUEUE_TIMEOUT_US_PREF_STRING, DEFAULT_DECODER_OUTPUT_DEQUEUE_TIMEOUT_US),
                         0, 50000);
+
+        // TV tuning
+        config.audioBufferMode = prefs.getString(AUDIO_BUFFER_MODE_PREF_STRING, DEFAULT_AUDIO_BUFFER_MODE);
+        if (config.audioBufferMode == null) {
+            config.audioBufferMode = DEFAULT_AUDIO_BUFFER_MODE;
+        }
+        config.mtkFullSpeedHints = prefs.getBoolean(MTK_FULL_SPEED_HINTS_PREF_STRING, DEFAULT_MTK_FULL_SPEED_HINTS);
+        config.patientDecoderInput = com.limelight.BuildConfig.TV_BUILD;
 
         // Read custom values
         config.customResolution = prefs.getString(CUSTOM_RESOLUTION_PREF_STRING, null);

@@ -259,7 +259,10 @@ public class StreamSettings extends AppCompatActivity {
             // --- Vsync is a GlUpscale feature: show only when GPUPath OR Upscaling are enabled ---
             // Additionally, keep them hidden when frame_pacing == "balanced" (Balanced already handles sync).
             final String framePacingValue = sp.getString("frame_pacing", "latency");
-            final boolean balancedSelected = "balanced".equals(framePacingValue);
+            // TV smooth paces through SurfaceFlinger like Balanced does through Choreographer,
+            // so the extra V-Sync options don't apply to it either.
+            final boolean balancedSelected = "balanced".equals(framePacingValue)
+                    || "tv".equals(framePacingValue);
 
             // GlUpscale active if either GPUPath is enabled or Upscaling (FSR-like) is enabled
             final boolean glUpscaleActive =

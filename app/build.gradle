@@ -12,10 +12,25 @@ android {
         targetSdk 34
 
         versionName "Experimental_Async_0.5.1"
-        versionCode = 57
+        // CI builds pass -PciVersionCode so every TV build installs as an update over the last one
+        versionCode = project.hasProperty('ciVersionCode') ? (project.property('ciVersionCode') as Integer) : 57
 
         // Generate native debug symbols to allow Google Play to symbolicate our native crashes
         ndk.debugSymbolLevel = 'FULL'
+
+        // Set to true only by the 'tv' build type (TV-tuned defaults and pacing)
+        buildConfigField "boolean", "TV_BUILD", "false"
+    }
+
+    signingConfigs {
+        // Fixed key for the personal TV build so CI-built APKs update in place (see tv-signing/README.md)
+        tv {
+            storeFile rootProject.file("tv-signing/artemide-tv.jks")
+            storeType "jks"
+            storePassword "artemidetv"
+            keyAlias "artemidetv"
+            keyPassword "artemidetv"
+        }
     }
 
     flavorDimensions.add("root")
@@ -71,6 +86,11 @@ android {
     lint {
         disable 'MissingTranslation'
         lintConfig file('lint.xml')
+        // The TV CI build (-PskipLintVital) is a personal sideload build, not a Play release,
+        // so it skips the release-time lint pass (e.g. Play's target SDK rule)
+        if (project.hasProperty('skipLintVital')) {
+            checkReleaseBuilds = false
+        }
     }
 
     bundle {
@@ -168,6 +188,28 @@ perf {
         }
     }
 }
+        // Personal TV build (TCL C7K / MediaTek Pentonic 700). Installs next to the other variants.
+        tv {
+            initWith buildTypes.perf
+            matchingFallbacks = ["release"]
+            debuggable false
+            minifyEnabled true
+            shrinkResources true
+            signingConfig signingConfigs.tv
+            applicationIdSuffix ".artemidetv"
+            versionNameSuffix "-tv"
+            resValue "string", "app_label", "Artemide TV"
+            resValue "string", "app_label_root", "Artemide TV (Root)"
+            resValue "string", "app_label_game", "Artemide TV (Game)"
+            buildConfigField "boolean", "LOG_VERBOSE", "false"
+            buildConfigField "boolean", "TV_BUILD", "true"
+
+            externalNativeBuild {
+                ndkBuild {
+                    arguments "APP_PERF:=1", "APP_OPTIM:=release", "NDK_DEBUG=0"
+                }
+            }
+        }
     }
 
     externalNativeBuild {
@@ -180,7 +222,13 @@ perf {
         abi {
             enable true
             reset()
-            include "x86", "x86_64", "armeabi-v7a", "arm64-v8a"
+            if (project.hasProperty('armOnly')) {
+                // TV CI build: only ARM ABIs, plus one universal APK that installs on any ARM TV
+                include "armeabi-v7a", "arm64-v8a"
+                universalApk true
+            } else {
+                include "x86", "x86_64", "armeabi-v7a", "arm64-v8a"
+            }
         }
     }
 

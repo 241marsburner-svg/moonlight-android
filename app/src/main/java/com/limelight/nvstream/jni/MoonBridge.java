@@ -220,8 +220,13 @@ public class MoonBridge {
                                                int frameNumber, int frameType, char frameHostProcessingLatency,
                                                long receiveTimeMs, long enqueueTimeMs) {
         if (videoRenderer != null) {
-            return videoRenderer.submitDecodeUnit(decodeUnitData, decodeUnitLength,
+            final int ret = videoRenderer.submitDecodeUnit(decodeUnitData, decodeUnitLength,
                     decodeUnitType, frameNumber, frameType, frameHostProcessingLatency, receiveTimeMs, enqueueTimeMs);
+            if (ret == DR_NEED_IDR) {
+                // Artemide TV diagnostics: every one of these drops frames until a keyframe arrives
+                com.limelight.binding.video.TvDiagnostics.onKeyframeRequested();
+            }
+            return ret;
         }
         else {
             return DR_OK;

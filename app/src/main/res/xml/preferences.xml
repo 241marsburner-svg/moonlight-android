@@ -228,6 +228,13 @@
             app:iconSpaceReserved="false" />
 
         <CheckBoxPreference
+            android:defaultValue="false"
+            android:key="checkbox_mtk_full_speed_hints"
+            android:summary="@string/summary_mtk_full_speed_hints"
+            android:title="@string/title_mtk_full_speed_hints"
+            app:iconSpaceReserved="false" />
+
+        <CheckBoxPreference
             android:key="checkbox_async_decode"
             android:title="Async decode"
             android:summary="Enable MediaCodec async callback mode. Changes apply after decoder restart."
@@ -408,6 +415,14 @@
             android:key="list_audio_config"
             android:summary="@string/summary_audio_config_list"
             android:title="@string/title_audio_config_list"
+            app:iconSpaceReserved="false" />
+        <ListPreference
+            android:defaultValue="lowlatency"
+            android:entries="@array/audio_buffer_mode_names"
+            android:entryValues="@array/audio_buffer_mode_values"
+            android:key="list_audio_buffer_mode"
+            android:summary="@string/summary_audio_buffer_mode"
+            android:title="@string/title_audio_buffer_mode"
             app:iconSpaceReserved="false" />
         <CheckBoxPreference
             android:defaultValue="false"

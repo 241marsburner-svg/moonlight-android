@@ -196,6 +196,7 @@ public final class FramePacingGroupedDialogFragment extends DialogFragment {
 
         // --- Vsync group ---
         addHeader(rows, R.string.pacing_group_vsync);
+        addValueRow(rows, entries, entryValues, usedIndices, "tv");
         addValueRow(rows, entries, entryValues, usedIndices, "balanced");
 
         // --- Quality group ---

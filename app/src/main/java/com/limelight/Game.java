@@ -991,7 +991,9 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 decoderRenderer.setRenderTarget(streamContainer.getSurface());
 
                 // Starten Sie die NvConnection
-                conn.start(new AndroidAudioRenderer(Game.this, prefConfig.playHostAudio),
+                // NB: this used to pass playHostAudio as the "enable audio effects" flag, which made
+                // "Play audio on PC" switch the audio path and "system equalizer support" do nothing.
+                conn.start(new AndroidAudioRenderer(Game.this, prefConfig.enableAudioFx, prefConfig.audioBufferMode),
                         decoderRenderer, Game.this);
             }
         });
@@ -1531,6 +1533,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 prefConfig.framePacing == PreferenceConfiguration.FRAME_PACING_WARP2 ||
                 prefConfig.framePacing == PreferenceConfiguration.FRAME_PACING_MIN_LATENCY ||
                 prefConfig.framePacing == PreferenceConfiguration.FRAME_PACING_BALANCED ||
+                prefConfig.framePacing == PreferenceConfiguration.FRAME_PACING_TV_SMOOTH ||
                 prefConfig.reduceRefreshRate ;
     }
 

@@ -534,11 +534,29 @@ public class MediaCodecHelper {
                 ) && !isAdreno620;
     }
 
+    // Artemide TV: always send MediaTek's full-speed / low-latency hints, even when the decoder
+    // advertises FEATURE_LowLatency, and skip the speculative queue-depth limits (which can
+    // starve the decoder of input buffers when frames arrive in bunches over Wi-Fi).
+    private static volatile boolean mtkFullSpeedHints = false;
+
+    public static void setMtkFullSpeedHints(boolean enabled) {
+        mtkFullSpeedHints = enabled;
+    }
+
+    public static boolean isMtkDecoder(String decoderName) {
+        return decoderName != null && isDecoderInList(mtkDecoderPrefixes, decoderName);
+    }
+
+    public static boolean decoderAdvertisesLowLatency(MediaCodecInfo decoderInfo, String mimeType) {
+        return decoderSupportsAndroidRLowLatency(decoderInfo, mimeType);
+    }
+
     public static boolean setDecoderLowLatencyOptions(MediaFormat videoFormat, MediaCodecInfo decoderInfo, boolean ultraLowLatency, int tryNumber) {
         // Options here should be tried in the order of most to least risky. The decoder will use
         // the first MediaFormat that doesn't fail in configure().
 
         boolean setNewOption = false;
+        final boolean forceMtkFullSpeed = mtkFullSpeedHints && isMtkDecoder(decoderInfo.getName());
 
 //derflacco
         // NVIDIA Tegra extra low-latency toggles
@@ -556,7 +574,9 @@ public class MediaCodecHelper {
 
             // If this decoder officially supports FEATURE_LowLatency, we will just use that alone
             // for try 0. Otherwise, we'll include it as best effort with other options.
-            if (!ultraLowLatency && decoderSupportsAndroidRLowLatency(decoderInfo, videoFormat.getString(MediaFormat.KEY_MIME))) {
+            // (Artemide TV: with MediaTek full-speed hints enabled we keep going and add them.)
+            if (!ultraLowLatency && !forceMtkFullSpeed &&
+                    decoderSupportsAndroidRLowLatency(decoderInfo, videoFormat.getString(MediaFormat.KEY_MIME))) {
                 return true;
             }
 
@@ -663,16 +683,18 @@ public class MediaCodecHelper {
                         safeSet(videoFormat, "vendor.mtk.vdec.ultra-low-latency", 1);
                     }
 
-                    // Avoid one frame of preload. Depth 2 is safer than depth 1 on MTK.
-                    safeSet(videoFormat, "vendor.mtk.vdec.preload.frame.count", 0);
-                    safeSet(videoFormat, "vendor.mtk.vdec.input.max.queue.depth", 2);
-                    safeSet(videoFormat, "vendor.mtk.vdec.output.max.queue.depth", 2);
+                    if (!forceMtkFullSpeed) {
+                        // Avoid one frame of preload. Depth 2 is safer than depth 1 on MTK.
+                        safeSet(videoFormat, "vendor.mtk.vdec.preload.frame.count", 0);
+                        safeSet(videoFormat, "vendor.mtk.vdec.input.max.queue.depth", 2);
+                        safeSet(videoFormat, "vendor.mtk.vdec.output.max.queue.depth", 2);
 
-                    // Different MTK BSPs expose these keys with or without ".value".
-                    safeSet(videoFormat, "vendor.mtk.vdec.buffer.fetch.timeout.ms", 2);
-                    safeSet(videoFormat, "vendor.mtk.vdec.buffer.fetch.timeout.ms.value", 2);
-                    safeSet(videoFormat, "vendor.mtk.vdec.bq.guard.interval.time", 2);
-                    safeSet(videoFormat, "vendor.mtk.vdec.bq.guard.interval.time.value", 2);
+                        // Different MTK BSPs expose these keys with or without ".value".
+                        safeSet(videoFormat, "vendor.mtk.vdec.buffer.fetch.timeout.ms", 2);
+                        safeSet(videoFormat, "vendor.mtk.vdec.buffer.fetch.timeout.ms.value", 2);
+                        safeSet(videoFormat, "vendor.mtk.vdec.bq.guard.interval.time", 2);
+                        safeSet(videoFormat, "vendor.mtk.vdec.bq.guard.interval.time.value", 2);
+                    }
 
                     safeSet(videoFormat, "vendor.mtk.vdec.cpu.boost.mode", 1);
                     safeSet(videoFormat, "vendor.mtk.vdec.cpu.boost.mode.value", 1);

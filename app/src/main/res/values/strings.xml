@@ -365,6 +365,16 @@
     <string name="pacing_balanced_alt">Balanced with FPS limit</string>
     <string name="pacing_smoothness">Prefer smoothest video (may significantly increase latency)</string>
     <string name="pacing_gpu_raw">Gpu Raw</string>
+    <string name="pacing_tv_smooth">TV smooth (Wi-Fi jitter buffer)</string>
+
+    <!-- Artemide TV tuning -->
+    <string name="title_audio_buffer_mode">Audio buffer</string>
+    <string name="summary_audio_buffer_mode">Low latency suits phones. TVs process sound more heavily and Wi-Fi delivers audio in bunches, which can run a tiny buffer dry and causes audio stutter. Normal keeps a 50 ms cushion; Large keeps 100 ms.</string>
+    <string name="audio_buffer_low_latency">Low latency (phones)</string>
+    <string name="audio_buffer_normal">Normal (TVs, recommended)</string>
+    <string name="audio_buffer_large">Large (if audio still stutters)</string>
+    <string name="title_mtk_full_speed_hints">MediaTek full-speed decoder hints</string>
+    <string name="summary_mtk_full_speed_hints">Always ask MediaTek decoders to run at full clock speed and in low-latency mode, even when they report Android\'s standard low-latency support. Skips the experimental queue-depth limits.</string>
     <string name="pacing_group_latency">Latency</string>
     <string name="pacing_group_vsync">Vsync</string>
     <string name="pacing_group_quality">Quality</string>
