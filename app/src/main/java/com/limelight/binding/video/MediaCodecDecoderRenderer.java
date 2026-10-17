@@ -212,6 +212,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     private HandlerThread frameRenderedThread;
     private Handler frameRenderedHandler;
     // Upper bound for waiting on a free decoder input buffer before giving up on the frame
+    // (With direct submit this is the network receive thread waiting, so keep it bounded.)
     private static final long PATIENT_INPUT_WAIT_BUDGET_NS = 100_000_000L; // 100 ms
     // ==== End Artemide TV ====
 
@@ -715,6 +716,9 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         int avcOptimalSlicesPerFrame = 0;
         int hevcOptimalSlicesPerFrame = 0;
         if (coldCfg.avcDecoder != null) {
+            // (Artemide TV keeps direct submit: a frame the decoder can't take yet then waits in
+            // the socket buffer, which is large. common-c's own decode queue would overflow after
+            // 15 frames and force a keyframe after every longer network pause.)
             coldCfg.directSubmit = MediaCodecHelper.decoderCanDirectSubmit(coldCfg.avcDecoder.getName());
             coldCfg.refFrameInvalidationAvc = MediaCodecHelper.decoderSupportsRefFrameInvalidationAvc(coldCfg.avcDecoder.getName(), coldCfg.initialHeight);
             avcOptimalSlicesPerFrame = MediaCodecHelper.getDecoderOptimalSlicesPerFrame(coldCfg.avcDecoder.getName());
@@ -2877,6 +2881,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                     final long overlayNowNs = System.nanoTime();
                     if ((overlayNowNs - lastPerfOverlayDispatchNs) >= PERF_OVERLAY_DISPATCH_INTERVAL_NS) {
                         lastPerfOverlayDispatchNs = overlayNowNs;
+                        TvDiagnostics.markOverlayDispatch();
 
                         perfOverlayHandler.post(new Runnable() {
                             @Override
@@ -3681,6 +3686,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
         if (PreferenceConfiguration.isTvPacing(prefs.framePacing)) {
             tvPacer.setGameMode(prefs.framePacing == PreferenceConfiguration.FRAME_PACING_TV_GAME);
+            tvPacer.setAggressiveTiming(prefs.tvAggressiveTiming);
             // Hand the frame to SurfaceFlinger right away with an evenly spaced presentation
             // time; SurfaceFlinger holds it until then (see TvFramePacer).
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {

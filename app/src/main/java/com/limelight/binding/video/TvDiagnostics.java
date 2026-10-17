@@ -91,6 +91,11 @@ public final class TvDiagnostics {
         lastVideoReceiveMs = 0;
         lastGapAtMs = 0;
         gapPeriodEmaMs = 0;
+        maxSubmitNs = 0;
+        slowSubmits.set(0);
+        snapSlowSubmits = 0;
+        gapsAfterOverlay.set(0);
+        snapGcCount = -1;
         videoArrivals.set(0); videoBunched.set(0); videoNetGaps.set(0); maxVideoNetGapMs = 0;
         inAppSumMs.set(0); inAppSamples.set(0); maxInAppMs = 0;
         lastAudioArrivalNs = 0; audioArrivalGaps.set(0); maxAudioArrivalGapMs = 0;
@@ -160,6 +165,22 @@ public final class TvDiagnostics {
     private static final AtomicLong audioArrivalGaps = new AtomicLong();
     private static volatile long maxAudioArrivalGapMs;
     private static volatile int boostedThreads = -1;
+
+    // How long handing a frame to the decoder took (decode thread)
+    private static volatile long maxSubmitNs;
+    private static final AtomicLong slowSubmits = new AtomicLong();
+    private static long snapSlowSubmits;
+
+    // Do the arrival gaps line up with overlay updates (i.e. does the overlay cause them)?
+    private static volatile long lastOverlayBuildMs;
+    private static final AtomicLong gapsAfterOverlay = new AtomicLong();
+
+    // Java garbage collection, from ART's runtime stats
+    private static long snapGcCount = -1, snapGcTimeMs, snapBlockingGcCount, snapBlockingGcTimeMs;
+
+    // Network description is a binder call: refresh it every few seconds only
+    private static String cachedNetwork = "?";
+    private static long cachedNetworkAtMs;
     private static long lastGapAtMs;
     private static volatile long gapPeriodEmaMs;
     private static long snapArrivals, snapBunched, snapNetGaps, snapInAppSum, snapInAppSamples, snapAudioGaps;
@@ -195,10 +216,37 @@ public final class TvDiagnostics {
                     gapPeriodEmaMs = (ema == 0) ? iv : ema + (iv - ema) / 4;
                 }
                 videoNetGaps.incrementAndGet();
+                final long sinceOverlay = last - lastOverlayBuildMs;
+                if (lastOverlayBuildMs > 0 && sinceOverlay >= 0 && sinceOverlay <= 250) {
+                    gapsAfterOverlay.incrementAndGet();
+                }
                 if (d > maxVideoNetGapMs) {
                     maxVideoNetGapMs = d;
                 }
             }
+        }
+    }
+
+    /** The once-a-second overlay update was just handed to the UI thread. */
+    public static void markOverlayDispatch() {
+        lastOverlayBuildMs = System.nanoTime() / 1_000_000L;
+    }
+
+    public static void onSubmitDone(long durationNs) {
+        if (durationNs > maxSubmitNs) {
+            maxSubmitNs = durationNs;
+        }
+        if (durationNs > 20_000_000L) {
+            slowSubmits.incrementAndGet();
+        }
+    }
+
+    private static long gcStat(String name) {
+        try {
+            final String v = android.os.Debug.getRuntimeStat(name);
+            return (v != null) ? Long.parseLong(v) : -1;
+        } catch (Throwable t) {
+            return -1;
         }
     }
 
@@ -461,7 +509,29 @@ public final class TvDiagnostics {
                     bunchedPct, netGapsPerSec, maxVideoNetGapMs,
                     gapPeriodEmaMs > 0 ? String.format(Locale.US, ", about every %d ms", gapPeriodEmaMs) : "",
                     inAvg, maxInAppMs, aGapsPerSec, maxAudioArrivalGapMs, boostedThreads));
-            sb.append("Network: ").append(describeNetwork(context)).append('\n');
+            final long nowMsForNet = System.nanoTime() / 1_000_000L;
+            if (nowMsForNet - cachedNetworkAtMs >= 5000) {
+                cachedNetwork = describeNetwork(context);
+                cachedNetworkAtMs = nowMsForNet;
+            }
+            sb.append("Network: ").append(cachedNetwork).append('\n');
+
+            // Where could a once-a-second stall come from inside the app?
+            final long slow = slowSubmits.get();
+            final long gcCount = gcStat("art.gc.gc-count"), gcTime = gcStat("art.gc.gc-time");
+            final long bCount = gcStat("art.gc.blocking-gc-count"), bTime = gcStat("art.gc.blocking-gc-time");
+            String gcText = "?";
+            if (gcCount >= 0 && snapGcCount >= 0 && haveRates) {
+                gcText = String.format(Locale.US, "%.1f/s (%d ms), blocking %d (%d ms)",
+                        (gcCount - snapGcCount) / secs, gcTime - snapGcTimeMs,
+                        bCount - snapBlockingGcCount, bTime - snapBlockingGcTimeMs);
+            }
+            snapGcCount = gcCount; snapGcTimeMs = gcTime; snapBlockingGcCount = bCount; snapBlockingGcTimeMs = bTime;
+            sb.append(String.format(Locale.US,
+                    "App: decoder hand-off max %d ms (slow %.1f/s) · gaps right after an overlay update %d of %d · GC %s\n",
+                    maxSubmitNs / 1_000_000L, haveRates ? (slow - snapSlowSubmits) / secs : 0,
+                    gapsAfterOverlay.get(), netGaps, gcText));
+            snapSlowSubmits = slow;
         }
 
         if (prefs != null && PreferenceConfiguration.isTvPacing(prefs.framePacing)) {
@@ -588,7 +658,16 @@ public final class TvDiagnostics {
             final float hz = d.getRefreshRate();
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 final Display.Mode m = d.getMode();
-                return String.format(Locale.US, "%dx%d @ %.2f Hz", m.getPhysicalWidth(), m.getPhysicalHeight(), hz);
+                // Which refresh rates does the TV offer apps at this resolution? (120 Hz would
+                // allow a 120 fps stream to be shown frame by frame.)
+                final java.util.TreeSet<Integer> rates = new java.util.TreeSet<>();
+                for (Display.Mode c : d.getSupportedModes()) {
+                    if (c.getPhysicalWidth() == m.getPhysicalWidth() && c.getPhysicalHeight() == m.getPhysicalHeight()) {
+                        rates.add(Math.round(c.getRefreshRate()));
+                    }
+                }
+                return String.format(Locale.US, "%dx%d @ %.2f Hz (offers %s Hz)",
+                        m.getPhysicalWidth(), m.getPhysicalHeight(), hz, rates.descendingSet().toString());
             }
             return String.format(Locale.US, "%.2f Hz", hz);
         } catch (Throwable t) {

@@ -92,6 +92,12 @@ final class TvFramePacer {
         gameMode = enabled;
     }
 
+    private volatile boolean aggressiveTiming;
+
+    void setAggressiveTiming(boolean enabled) {
+        aggressiveTiming = enabled;
+    }
+
     void startVsyncClock(Display display) {
         vsyncClock.start(display);
     }
@@ -170,7 +176,7 @@ final class TvFramePacer {
         // SurfaceFlinger takes a buffer for a refresh at (refresh time - pipeline)
         final long basePipeline = (presentationGrid && grid[2] > 0L)
                 ? grid[2]
-                : refresh + (game ? 0L : LEGACY_PIPELINE_EXTRA_NS);
+                : (aggressiveTiming ? refresh / 2 : refresh + (game ? 0L : LEGACY_PIPELINE_EXTRA_NS));
         final long pipeline = basePipeline + adaptiveExtraNs;
         final long minPresentNs = nowNs + pipeline + QUEUE_SAFETY_NS;
 

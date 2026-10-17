@@ -223,8 +223,10 @@ public class MoonBridge {
             // Artemide TV diagnostics: was the frame bunched on arrival, and how long was it
             // in the app before it reached the decoder?
             com.limelight.binding.video.TvDiagnostics.onVideoFrameArrived(receiveTimeMs);
+            final long submitStartNs = System.nanoTime();
             final int ret = videoRenderer.submitDecodeUnit(decodeUnitData, decodeUnitLength,
                     decodeUnitType, frameNumber, frameType, frameHostProcessingLatency, receiveTimeMs, enqueueTimeMs);
+            com.limelight.binding.video.TvDiagnostics.onSubmitDone(System.nanoTime() - submitStartNs);
             if (ret == DR_NEED_IDR) {
                 // Artemide TV diagnostics: every one of these drops frames until a keyframe arrives
                 com.limelight.binding.video.TvDiagnostics.onKeyframeRequested();

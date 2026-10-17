@@ -367,6 +367,8 @@
     <string name="pacing_gpu_raw">Gpu Raw</string>
     <string name="pacing_tv_smooth">TV smooth (Wi-Fi jitter buffer, for video)</string>
     <string name="pacing_tv_game">TV game (low input delay)</string>
+    <string name="title_tv_aggressive_timing">TV pacing: aggressive timing (experimental)</string>
+    <string name="summary_tv_aggressive_timing">Hands each frame to the TV half a refresh later, which saves about 8 ms of delay. If the picture starts to stutter, your TV needs the extra time: turn this off again.</string>
     <string name="title_tv_game_mode">Ask the TV for game mode</string>
     <string name="summary_tv_game_mode">While streaming, ask the TV to switch its picture processing to low-latency game mode (Android 11+, if the TV supports it). This removes most of the delay the TV itself adds.</string>
 

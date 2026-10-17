@@ -77,6 +77,11 @@ public class PreferenceConfiguration {
     public static final String TV_GAME_MODE_PREF_STRING = "checkbox_tv_game_mode";
     public boolean tvGameMode = false;
 
+    // TV pacing: plan frames half a refresh closer to the display (lower delay; stutters if the
+    // TV needs the full refresh to pick a frame up)
+    public static final String TV_AGGRESSIVE_TIMING_PREF_STRING = "checkbox_tv_aggressive_timing";
+    public boolean tvAggressiveTiming = false;
+
     // CpuWarmUp (read from prefs)
     public boolean cpuWarmUpEnable;
 
@@ -1241,6 +1246,7 @@ public class PreferenceConfiguration {
         config.mtkFullSpeedHints = prefs.getBoolean(MTK_FULL_SPEED_HINTS_PREF_STRING, DEFAULT_MTK_FULL_SPEED_HINTS);
         config.patientDecoderInput = com.limelight.BuildConfig.TV_BUILD;
         config.tvGameMode = prefs.getBoolean(TV_GAME_MODE_PREF_STRING, com.limelight.BuildConfig.TV_BUILD);
+        config.tvAggressiveTiming = prefs.getBoolean(TV_AGGRESSIVE_TIMING_PREF_STRING, false);
 
         // Read custom values
         config.customResolution = prefs.getString(CUSTOM_RESOLUTION_PREF_STRING, null);
