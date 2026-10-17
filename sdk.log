@@ -1,0 +1,4 @@
+Android SDK: /usr/local/lib/android/sdk
+sdkmanager: /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager
+yes: standard output: Broken pipe
+Warning: An error occurred while preparing SDK package NDK (Side by side) 27.0.12077973: Error on ZipFile unknown archive.
