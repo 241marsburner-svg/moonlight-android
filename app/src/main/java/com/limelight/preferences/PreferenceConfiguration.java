@@ -54,6 +54,12 @@ public class PreferenceConfiguration {
     public static final String AUDIO_BUFFER_NORMAL = "normal";
     public static final String AUDIO_BUFFER_LARGE = "large";
     public static final String AUDIO_BUFFER_LOW_LAG = "lowlag";
+    // No audio on the TV at all: the PC keeps playing its own sound (e.g. to a headset there)
+    public static final String AUDIO_BUFFER_OFF = "off";
+
+    public boolean isTvAudioOff() {
+        return AUDIO_BUFFER_OFF.equals(audioBufferMode);
+    }
     private static final String DEFAULT_AUDIO_BUFFER_MODE = AUDIO_BUFFER_LOW_LATENCY;
     public String audioBufferMode = DEFAULT_AUDIO_BUFFER_MODE;
 

@@ -376,6 +376,7 @@
     <string name="audio_buffer_low_latency">Low latency (phones)</string>
     <string name="audio_buffer_normal">TV adaptive (recommended, no dropouts)</string>
     <string name="audio_buffer_large">TV large (for very bad Wi-Fi)</string>
+    <string name="audio_buffer_off">Off: sound stays on the PC (headset on the PC)</string>
     <string name="audio_buffer_low_lag">TV low lag (max 60 ms, may crackle on Wi-Fi hiccups)</string>
     <string name="title_mtk_full_speed_hints">MediaTek full-speed decoder hints</string>
     <string name="summary_mtk_full_speed_hints">Always ask MediaTek decoders to run at full clock speed and in low-latency mode, even when they report Android\'s standard low-latency support. Skips the experimental queue-depth limits.</string>

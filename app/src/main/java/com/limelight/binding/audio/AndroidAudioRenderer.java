@@ -76,6 +76,7 @@ private static void bumpAudioPriority() {
     private long tvNextLevelReportMs;
 
     private AudioTrack track;
+    private boolean audioOff;
 
     public AndroidAudioRenderer(Context context, boolean enableAudioFx) {
         this(context, enableAudioFx, PreferenceConfiguration.AUDIO_BUFFER_LOW_LATENCY);
@@ -147,6 +148,13 @@ private static void bumpAudioPriority() {
 
     @Override
     public int setup(MoonBridge.AudioConfiguration audioConfiguration, int sampleRate, int samplesPerFrame) {
+        // Artemide TV "Off": no track, nothing played on the TV (the PC plays the sound itself)
+        if (PreferenceConfiguration.AUDIO_BUFFER_OFF.equals(bufferMode)) {
+            audioOff = true;
+            TvDiagnostics.setAudioTrackInfo("off (sound plays on the PC)", 0);
+            LimeLog.info("Audio output disabled: sound plays on the host PC");
+            return 0;
+        }
         int channelConfig;
         int bytesPerFrame;
 
@@ -466,7 +474,11 @@ private static void bumpAudioPriority() {
 
     @Override
     public void playDecodedAudio(short[] audioData) {
+        // (Arrival is still measured with audio off: it shows network pauses)
         TvDiagnostics.onAudioPacketArrived();
+        if (audioOff) {
+            return;
+        }
         if (tvMode) {
             playDecodedAudioTv(audioData);
             pollUnderruns();
@@ -505,7 +517,7 @@ private static void bumpAudioPriority() {
 
     @Override
     public void start() {
-        if (enableAudioFx) {
+        if (enableAudioFx && track != null) {
             // Open an audio effect control session to allow equalizers to apply audio effects
             Intent i = new Intent(AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION);
             i.putExtra(AudioEffect.EXTRA_AUDIO_SESSION, track.getAudioSessionId());
@@ -517,7 +529,7 @@ private static void bumpAudioPriority() {
 
     @Override
     public void stop() {
-        if (enableAudioFx) {
+        if (enableAudioFx && track != null) {
             // Close our audio effect control session when we're stopping
             Intent i = new Intent(AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION);
             i.putExtra(AudioEffect.EXTRA_AUDIO_SESSION, track.getAudioSessionId());
@@ -528,6 +540,9 @@ private static void bumpAudioPriority() {
 
     @Override
     public void cleanup() {
+        if (track == null) {
+            return;
+        }
         // Immediately drop all pending data
         track.pause();
         track.flush();
