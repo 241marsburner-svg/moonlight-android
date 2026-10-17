@@ -35,6 +35,8 @@ jobs:
       - name: Install Android platform and NDK
         run: |
           set -eo pipefail
+          mkdir -p ci-logs
+          exec > >(tee -a ci-logs/sdk.log) 2>&1
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
           SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
           if [ ! -x "$SDKMANAGER" ]; then
@@ -68,12 +70,36 @@ jobs:
 
       - name: Build TV APK
         run: |
+          set -o pipefail
+          mkdir -p ci-logs
           chmod +x ./gradlew
           ./gradlew --no-daemon --stacktrace \
             assembleNonRoot_gameTv \
             -ParmOnly \
             -PskipLintVital \
-            -PciVersionCode=$((570000 + ${{ github.run_number }}))
+            -PciVersionCode=$((570000 + ${{ github.run_number }})) 2>&1 | tee ci-logs/build.log
+
+      # If anything failed: the key error lines become annotations, and the full logs are
+      # pushed to the 'ci-logs' branch (job logs aren't always reachable from outside)
+      - name: Report build errors
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p ci-logs
+          cat ci-logs/*.log 2>/dev/null | grep -E -A3 "error:|error ::|e: |FAILURE:|What went wrong|Execution failed|Could not |AAPT: error|ERROR:|fatal error|make: \*\*\*|undefined reference|Exception" | head -n 150 > /tmp/errors.txt || true
+          split -l 30 /tmp/errors.txt /tmp/errpart- || true
+          for f in /tmp/errpart-*; do
+            [ -s "$f" ] || continue
+            msg=$(sed -e 's/%/%25/g' -e 's/\r/%0D/g' "$f" | awk 'BEGIN{ORS="%0A"} {print}')
+            echo "::error title=Build log excerpt::$msg"
+          done
+          tmp=$(mktemp -d)
+          cp ci-logs/*.log "$tmp"/ 2>/dev/null || echo "no logs captured" > "$tmp/none.log"
+          cd "$tmp"
+          git init -q && git checkout -q -b ci-logs && git add . && \
+            git -c user.name=ci -c user.email=ci@users.noreply.github.com commit -qm "Build logs for run ${{ github.run_number }}" && \
+            git push -qf "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" ci-logs || true
 
       - name: Collect APKs
         run: |
