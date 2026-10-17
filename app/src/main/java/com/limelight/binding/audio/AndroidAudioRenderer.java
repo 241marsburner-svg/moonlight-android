@@ -456,6 +456,7 @@ private static void bumpAudioPriority() {
 
     @Override
     public void playDecodedAudio(short[] audioData) {
+        TvDiagnostics.onAudioPacketArrived();
         if (tvMode) {
             playDecodedAudioTv(audioData);
             pollUnderruns();

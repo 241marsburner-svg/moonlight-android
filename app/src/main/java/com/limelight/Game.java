@@ -439,6 +439,14 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         }
     };
 
+    // Artemide TV: re-applied every few seconds in case common-c restarts a thread
+    private final Runnable tvThreadBoost = () -> {
+        if (connected) {
+            com.limelight.tv.TvThreadBooster.boostStreamingThreads();
+            timerHandler.postDelayed(Game.this.tvThreadBoost, 5000);
+        }
+    };
+
     private final Runnable backgroundPing = () -> {
         if (connected) {
             // Artemide TV: twice as often, to keep the TV's Wi-Fi from dozing between frames
@@ -3934,6 +3942,11 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
                 if (prefConfig.preventPacketLoss) {
                     timerHandler.postDelayed(backgroundPing, 1000);
+                }
+
+                // Artemide TV: give the native streaming threads real-time-ish priorities
+                if (BuildConfig.TV_BUILD) {
+                    timerHandler.postDelayed(tvThreadBoost, 300);
                 }
             }
         });

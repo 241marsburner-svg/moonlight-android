@@ -88,6 +88,11 @@ public final class TvDiagnostics {
         maxDisplayIntervalNs = 0;
         lastReleaseNs = 0;
         releaseIntervalEmaNs = 0;
+        lastVideoReceiveMs = 0;
+        videoArrivals.set(0); videoBunched.set(0); videoNetGaps.set(0); maxVideoNetGapMs = 0;
+        inAppSumMs.set(0); inAppSamples.set(0); maxInAppMs = 0;
+        lastAudioArrivalNs = 0; audioArrivalGaps.set(0); maxAudioArrivalGapMs = 0;
+        snapArrivals = 0; snapBunched = 0; snapNetGaps = 0; snapInAppSum = 0; snapInAppSamples = 0; snapAudioGaps = 0;
         pacerLate.set(0);
         pacerTrims.set(0);
         pacerCapped.set(0);
@@ -138,6 +143,70 @@ public final class TvDiagnostics {
                 releaseIntervalEmaNs = (ema == 0) ? d : ema + (d - ema) / 16;
             }
         }
+    }
+
+    // --- Arrival (where does bunching start?) ---
+    private static long lastVideoReceiveMs;
+    private static final AtomicLong videoArrivals = new AtomicLong();
+    private static final AtomicLong videoBunched = new AtomicLong();
+    private static final AtomicLong videoNetGaps = new AtomicLong();
+    private static volatile long maxVideoNetGapMs;
+    private static final AtomicLong inAppSumMs = new AtomicLong();
+    private static final AtomicLong inAppSamples = new AtomicLong();
+    private static volatile long maxInAppMs;
+    private static long lastAudioArrivalNs;
+    private static final AtomicLong audioArrivalGaps = new AtomicLong();
+    private static volatile long maxAudioArrivalGapMs;
+    private static volatile int boostedThreads = -1;
+    private static long snapArrivals, snapBunched, snapNetGaps, snapInAppSum, snapInAppSamples, snapAudioGaps;
+
+    /** Video decoder thread: one complete frame came out of the network stack. */
+    public static void onVideoFrameArrived(long receiveTimeMs) {
+        final long nowMs = System.nanoTime() / 1_000_000L;
+        videoArrivals.incrementAndGet();
+        final long inApp = nowMs - receiveTimeMs;
+        if (inApp >= 0 && inApp < 2000) {
+            inAppSumMs.addAndGet(inApp);
+            inAppSamples.incrementAndGet();
+            if (inApp > maxInAppMs) {
+                maxInAppMs = inApp;
+            }
+        }
+        final long last = lastVideoReceiveMs;
+        lastVideoReceiveMs = receiveTimeMs;
+        if (last > 0 && receiveTimeMs >= last) {
+            final long d = receiveTimeMs - last;
+            final long periodMs = Math.max(1L, Math.max(expectedFramePeriodNs, releaseIntervalEmaNs) / 1_000_000L);
+            if (d <= 2 && periodMs >= 6) {
+                videoBunched.incrementAndGet();
+            }
+            if (d > (periodMs * 5) / 2 && d < 2000) {
+                videoNetGaps.incrementAndGet();
+                if (d > maxVideoNetGapMs) {
+                    maxVideoNetGapMs = d;
+                }
+            }
+        }
+    }
+
+    /** Audio decoder thread: one decoded audio packet (normally 5 ms) is ready to play. */
+    public static void onAudioPacketArrived() {
+        final long now = System.nanoTime();
+        final long last = lastAudioArrivalNs;
+        lastAudioArrivalNs = now;
+        if (last != 0 && now > last) {
+            final long gapMs = (now - last) / 1_000_000L;
+            if (gapMs > 20 && gapMs < 2000) {
+                audioArrivalGaps.incrementAndGet();
+                if (gapMs > maxAudioArrivalGapMs) {
+                    maxAudioArrivalGapMs = gapMs;
+                }
+            }
+        }
+    }
+
+    public static void setBoostedThreads(int count) {
+        boostedThreads = count;
     }
 
     // TV picture mode request (setPreferMinimalPostProcessing)
@@ -362,6 +431,21 @@ public final class TvDiagnostics {
                     shownFps, releasedFps, gapsPerSec, maxDisplayIntervalNs / 1_000_000L));
         } else {
             sb.append(String.format(Locale.US, "Sent to display %.1f fps (no render callbacks)\n", releasedFps));
+        }
+
+        {
+            final long arrivals = videoArrivals.get(), bunched = videoBunched.get(), netGaps = videoNetGaps.get();
+            final long inSum = inAppSumMs.get(), inN = inAppSamples.get(), aGaps = audioArrivalGaps.get();
+            final long dArr = arrivals - snapArrivals;
+            final double bunchedPct = dArr > 0 ? 100.0 * (bunched - snapBunched) / dArr : 0;
+            final double netGapsPerSec = haveRates ? (netGaps - snapNetGaps) / secs : 0;
+            final double inAvg = (inN - snapInAppSamples) > 0 ? (inSum - snapInAppSum) / (double) (inN - snapInAppSamples) : 0;
+            final double aGapsPerSec = haveRates ? (aGaps - snapAudioGaps) / secs : 0;
+            snapArrivals = arrivals; snapBunched = bunched; snapNetGaps = netGaps;
+            snapInAppSum = inSum; snapInAppSamples = inN; snapAudioGaps = aGaps;
+            sb.append(String.format(Locale.US,
+                    "Arrival: video bunched %.0f%% · gaps %.1f/s (longest %d ms) · in app %.1f ms (max %d) · audio gaps %.1f/s (longest %d ms) · boosted threads %d\n",
+                    bunchedPct, netGapsPerSec, maxVideoNetGapMs, inAvg, maxInAppMs, aGapsPerSec, maxAudioArrivalGapMs, boostedThreads));
         }
 
         if (prefs != null && PreferenceConfiguration.isTvPacing(prefs.framePacing)) {
