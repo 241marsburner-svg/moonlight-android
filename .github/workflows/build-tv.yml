@@ -14,7 +14,8 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Pinned: this image ships the Android SDK (ubuntu-latest moves to a new image soon)
+    runs-on: ubuntu-24.04
     timeout-minutes: 75
 
     steps:
@@ -30,13 +31,31 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
+      # Uses the Android SDK that comes with the runner image (no setup action needed)
       - name: Install Android platform and NDK
         run: |
-          sdkmanager --install "platforms;android-36" "ndk;27.0.12077973" > /dev/null
-          ls "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/ndk" || true
+          set -eo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(ls -d "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | sort -V | tail -n1 || true)"
+          fi
+          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
+            echo "No sdkmanager on the runner; installing Android command-line tools"
+            mkdir -p "$SDK/cmdline-tools"
+            curl -sSL -o /tmp/cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+            unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-tools
+            rm -rf "$SDK/cmdline-tools/latest"
+            mv /tmp/cmdline-tools/cmdline-tools "$SDK/cmdline-tools/latest"
+            SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          echo "Android SDK: $SDK"
+          echo "sdkmanager: $SDKMANAGER"
+          (yes | "$SDKMANAGER" --sdk_root="$SDK" --licenses > /dev/null) || true
+          "$SDKMANAGER" --sdk_root="$SDK" --install "platforms;android-36" "ndk;27.0.12077973" > /dev/null
+          ls "$SDK/ndk"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
 
       - name: Cache Gradle
         uses: actions/cache@v4
