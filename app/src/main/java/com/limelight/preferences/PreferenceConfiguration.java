@@ -78,6 +78,10 @@ public class PreferenceConfiguration {
     public static final String TV_STREAM_REPORT_PREF_STRING = "checkbox_tv_stream_report";
     public boolean tvStreamReport = false;
 
+    // Artemide TV: time A/B/X/Y presses against latency-test.html on the PC (result in the report)
+    public static final String TV_LATENCY_TEST_PREF_STRING = "checkbox_tv_latency_test";
+    public boolean tvLatencyTest = false;
+
     // Wait patiently for a free decoder input buffer instead of dropping the frame and
     // requesting a keyframe after ~5 ms. Always on in the TV build.
     public boolean patientDecoderInput = false;
@@ -1257,6 +1261,7 @@ public class PreferenceConfiguration {
                 prefs.getBoolean(MTK_FULL_SPEED_HINTS_PREF_STRING, DEFAULT_MTK_FULL_SPEED_HINTS);
         config.mtkExtraDecoderKeys = prefs.getBoolean(MTK_EXTRA_DECODER_KEYS_PREF_STRING, false);
         config.tvStreamReport = prefs.getBoolean(TV_STREAM_REPORT_PREF_STRING, com.limelight.BuildConfig.TV_BUILD);
+        config.tvLatencyTest = prefs.getBoolean(TV_LATENCY_TEST_PREF_STRING, false);
         config.patientDecoderInput = com.limelight.BuildConfig.TV_BUILD;
         config.tvGameMode = prefs.getBoolean(TV_GAME_MODE_PREF_STRING, com.limelight.BuildConfig.TV_BUILD);
         config.tvAggressiveTiming = prefs.getBoolean(TV_AGGRESSIVE_TIMING_PREF_STRING, false);

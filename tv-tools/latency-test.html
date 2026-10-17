@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Artemide TV latency test</title>
+<!--
+  Artemide TV: the PC side of the latency test (Settings > Latency test on the TV).
+  Black while nothing is pressed; covered with a tile pattern while a gamepad button, key or mouse
+  button is held. The TV finds the frame with the pattern by its size, so the pattern is busy
+  enough to make that frame clearly bigger than the quiet ones before it.
+  Idea from moonlight-tcl's tools/latency-test.html (pabragin/moonlight-tcl, GPLv3).
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #777; overflow: hidden; cursor: none;
+               font: 18px/1.5 system-ui, "Segoe UI", sans-serif; }
+  #pattern { position: fixed; inset: 0; width: 100vw; height: 100vh; display: none; }
+  body.on #pattern { display: block; }
+  #hint { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); text-align: center;
+          max-width: 40em; }
+  #count { position: fixed; right: 1em; bottom: 0.6em; font-size: 14px; }
+  #keepalive { position: fixed; right: 24px; top: 24px; width: 40px; height: 40px; background: #333; }
+</style>
+</head>
+<body>
+<canvas id="pattern"></canvas>
+<div id="hint">
+  <b>Artemide TV latency test</b><br>
+  Press <b>F</b> or click for full screen.<br>
+  Then, streaming this screen to the TV, press <b>A, B, X or Y</b> on the TV's controller about
+  20 times: hold each press for a moment, let go, wait a second.<br>
+  The screen fills with tiles while a button is held.<br>
+  The small square top right changes every frame so the PC keeps sending at the full frame rate
+  (<b>K</b> turns it off).<br>
+  <small>This text goes away after the first press.</small>
+</div>
+<div id="count"></div>
+<div id="keepalive"></div>
+<script>
+(function () {
+  var body = document.body, hint = document.getElementById('hint'), count = document.getElementById('count');
+  var canvas = document.getElementById('pattern'), keep = document.getElementById('keepalive');
+  var presses = 0, mouseDown = false, keysDown = 0, padDown = false, shown = false, keepOn = true, tick = 0;
+
+  // Busy but bounded: flat tiles in random colours (many edges, no per-pixel noise)
+  function drawPattern() {
+    var dpr = window.devicePixelRatio || 1;
+    var w = Math.round(window.innerWidth * dpr), h = Math.round(window.innerHeight * dpr);
+    canvas.width = w; canvas.height = h;
+    var ctx = canvas.getContext('2d', { alpha: false });
+    var cell = Math.max(24, Math.round(40 * dpr));
+    var seed = 12345;
+    function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+    for (var y = 0; y < h; y += cell) {
+      for (var x = 0; x < w; x += cell) {
+        ctx.fillStyle = 'hsl(' + Math.floor(rnd() * 360) + ',70%,' + (25 + Math.floor(rnd() * 50)) + '%)';
+        ctx.fillRect(x, y, cell, cell);
+      }
+    }
+  }
+  drawPattern();
+  window.addEventListener('resize', drawPattern);
+
+  function update() {
+    var on = mouseDown || keysDown > 0 || padDown;
+    if (on !== shown) {
+      shown = on;
+      body.classList.toggle('on', on);
+      if (on) { presses++; count.textContent = presses; hint.style.display = 'none'; }
+    }
+  }
+
+  function pollPads() {
+    var pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    var any = false;
+    for (var i = 0; i < pads.length && !any; i++) {
+      var p = pads[i];
+      if (!p) continue;
+      for (var b = 0; b < p.buttons.length; b++) {
+        if (p.buttons[b].pressed) { any = true; break; }
+      }
+    }
+    padDown = any;
+    update();
+  }
+  // Poll as often as the browser allows; waiting for the next animation frame would add delay
+  setInterval(pollPads, 1);
+
+  function animate() {
+    if (keepOn) { tick = (tick + 7) % 360; keep.style.background = 'hsl(' + tick + ',60%,40%)'; }
+    pollPads();
+    requestAnimationFrame(animate);
+  }
+  requestAnimationFrame(animate);
+
+  function fullscreen() {
+    if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen().catch(function () {});
+    }
+  }
+  window.addEventListener('mousedown', function () { mouseDown = true; update(); });
+  window.addEventListener('mouseup', function () { mouseDown = false; update(); fullscreen(); });
+  window.addEventListener('keydown', function (e) {
+    if (e.repeat) return;
+    if (e.key === 'f' || e.key === 'F') { fullscreen(); return; }
+    if (e.key === 'k' || e.key === 'K') {
+      keepOn = !keepOn; keep.style.display = keepOn ? '' : 'none'; return;
+    }
+    keysDown++; update();
+  });
+  window.addEventListener('keyup', function (e) {
+    if (e.key === 'f' || e.key === 'F' || e.key === 'k' || e.key === 'K') return;
+    keysDown = Math.max(0, keysDown - 1); update();
+  });
+  window.addEventListener('blur', function () { keysDown = 0; mouseDown = false; update(); });
+})();
+</script>
+</body>
+</html>

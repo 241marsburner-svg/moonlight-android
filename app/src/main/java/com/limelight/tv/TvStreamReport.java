@@ -52,7 +52,9 @@ public final class TvStreamReport {
                 return;
             }
             sp.edit().putBoolean(KEY_PENDING, false).apply();
-            if (!sp.getBoolean(PreferenceConfiguration.TV_STREAM_REPORT_PREF_STRING, true)) {
+            // Saved only when the report or the latency test is on, so a pending report is wanted
+            if (!sp.getBoolean(PreferenceConfiguration.TV_STREAM_REPORT_PREF_STRING, true) &&
+                    !sp.getBoolean(PreferenceConfiguration.TV_LATENCY_TEST_PREF_STRING, false)) {
                 return;
             }
             final String text = sp.getString(KEY_TEXT, null);

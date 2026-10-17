@@ -947,6 +947,12 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 httpsPort, uniqueId, config,
                 PlatformBinding.getCryptoProvider(this), serverCert);
         controllerHandler = new ControllerHandler(this, conn, this, prefConfig);
+        // Artemide TV: button-to-screen latency test for this stream (result in the stream report)
+        if (BuildConfig.TV_BUILD && prefConfig.tvLatencyTest) {
+            com.limelight.tv.TvLatencyTest.begin();
+        } else {
+            com.limelight.tv.TvLatencyTest.clear();
+        }
         keyboardTranslator = new KeyboardTranslator(prefConfig);
 
         InputManager inputManager = (InputManager) getSystemService(Context.INPUT_SERVICE);
@@ -2048,7 +2054,8 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
             }
 
             // Artemide TV: save the stream report; the next app screen shows it
-            if (BuildConfig.TV_BUILD && prefConfig.tvStreamReport) {
+            com.limelight.tv.TvLatencyTest.end();
+            if (BuildConfig.TV_BUILD && (prefConfig.tvStreamReport || prefConfig.tvLatencyTest)) {
                 try {
                     final String stream = prefConfig.width + "x" + prefConfig.height + " " +
                             Math.round(prefConfig.fps) + " fps" + selectedVideoFormat + " " +

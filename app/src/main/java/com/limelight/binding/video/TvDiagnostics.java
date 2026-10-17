@@ -639,6 +639,12 @@ public final class TvDiagnostics {
                 decodeMs >= 0 ? decodeMs + " ms" : "?", avgLeadMs, maxLeadNs / 1_000_000L,
                 pacerLate.get(), pacerTrims.get(), pacerCapped.get(), inAvg, maxInAppMs));
 
+        // Button-to-screen latency test, if it ran in this stream
+        final String latency = com.limelight.tv.TvLatencyTest.reportLine();
+        if (latency != null) {
+            sb.append(latency).append('\n');
+        }
+
         // Decoder
         sb.append("Decoder: ").append(decoderPreset.isEmpty() ? ("preset " + decoderConfigTry) : decoderPreset)
                 .append(String.format(Locale.US, " · input waits %d (max %d ms) · keyframe requests %d · hand-off max %d ms (slow %d)\n",

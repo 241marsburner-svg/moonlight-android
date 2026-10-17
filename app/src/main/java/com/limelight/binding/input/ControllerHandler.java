@@ -2879,6 +2879,21 @@ if (this.prefConfig != null && this.prefConfig.snappyInput) {
             keyCode = handleFlipFaceButtons(keyCode);
         }
 
+        // Artemide TV latency test: time face-button presses against the stream's reaction
+        if (com.limelight.BuildConfig.TV_BUILD && event.getRepeatCount() == 0 &&
+                com.limelight.tv.TvLatencyTest.isEnabled()) {
+            switch (keyCode) {
+                case KeyEvent.KEYCODE_BUTTON_A:
+                case KeyEvent.KEYCODE_BUTTON_B:
+                case KeyEvent.KEYCODE_BUTTON_X:
+                case KeyEvent.KEYCODE_BUTTON_Y:
+                    com.limelight.tv.TvLatencyTest.onButtonDown(event.getEventTime());
+                    break;
+                default:
+                    break;
+            }
+        }
+
         switch (keyCode) {
         case KeyEvent.KEYCODE_BUTTON_MODE:
             context.hasMode = true;
@@ -3150,6 +3165,15 @@ if (this.prefConfig != null && this.prefConfig.snappyInput) {
 
         context.leftTrigger = (byte)(leftTrigger * 0xFF);
         context.rightTrigger = (byte)(rightTrigger * 0xFF);
+
+        // Artemide TV latency test: a face button that just went down on a USB pad
+        if (com.limelight.BuildConfig.TV_BUILD && com.limelight.tv.TvLatencyTest.isEnabled()) {
+            final int face = ControllerPacket.A_FLAG | ControllerPacket.B_FLAG |
+                    ControllerPacket.X_FLAG | ControllerPacket.Y_FLAG;
+            if ((buttonFlags & face & ~context.inputMap) != 0) {
+                com.limelight.tv.TvLatencyTest.onButtonDown(android.os.SystemClock.uptimeMillis());
+            }
+        }
 
         context.inputMap = buttonFlags;
 

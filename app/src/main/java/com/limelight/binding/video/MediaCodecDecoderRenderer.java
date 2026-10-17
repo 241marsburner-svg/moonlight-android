@@ -1056,6 +1056,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                     (codec, presentationTimeUs, nanoTime) -> {
                         TvDiagnostics.onFrameDisplayed(nanoTime);
                         tvPacer.onFrameRendered(presentationTimeUs, nanoTime);
+                        com.limelight.tv.TvLatencyTest.onFrameDisplayed(presentationTimeUs, nanoTime);
                     },
                     frameRenderedHandler);
         } catch (Throwable t) {
@@ -3278,6 +3279,9 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         }
         lastTimestampUs = timestampUs;
 
+        // Artemide TV latency test (no-op while off): finds the PC's reaction frame by its size
+        com.limelight.tv.TvLatencyTest.onFrameReceived(decodeUnitLength, timestampUs);
+
         numFramesIn++;
 
         if (decodeUnitLength > nextInputBuffer.limit() - nextInputBuffer.position()) {
@@ -3729,6 +3733,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     // Helper method for buffer release based on mode
     private void releaseBufferAccordingToMode(int bufferIndex, long presentationTimeUs) {
         TvDiagnostics.onFrameReleased();
+        com.limelight.tv.TvLatencyTest.onFrameReleased(presentationTimeUs);
         final com.limelight.tv.TvPerformanceHints hints = perfHints;
         if (hints != null && presentationTimeUs > 0) {
             // The PTS is the frame's arrival time (common-c clock = System.nanoTime's clock)

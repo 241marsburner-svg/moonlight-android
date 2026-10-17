@@ -263,6 +263,13 @@
             app:iconSpaceReserved="false" />
 
         <CheckBoxPreference
+            android:defaultValue="false"
+            android:key="checkbox_tv_latency_test"
+            android:summary="@string/summary_tv_latency_test"
+            android:title="@string/title_tv_latency_test"
+            app:iconSpaceReserved="false" />
+
+        <CheckBoxPreference
             android:key="checkbox_async_decode"
             android:title="Async decode"
             android:summary="Enable MediaCodec async callback mode. Changes apply after decoder restart."
