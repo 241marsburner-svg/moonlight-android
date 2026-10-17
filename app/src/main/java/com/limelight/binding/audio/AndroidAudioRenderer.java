@@ -47,7 +47,7 @@ private static void bumpAudioPriority() {
     // and it shrinks again slowly once the network has been calm for a while.
     private static final int TV_CAPACITY_MS = 400;
     private static final int TV_HEADROOM_MS = 160;
-    private static final int TV_MAX_TARGET_MS = 150;
+    private static final int TV_MAX_TARGET_MS = 200;
     private static final int TV_GROW_MS = 10;
     private static final int TV_SHRINK_MS = 5;
     private static final long TV_GROW_COOLDOWN_MS = 400;
@@ -89,11 +89,21 @@ private static void bumpAudioPriority() {
 
     private boolean isTvBufferMode() {
         return PreferenceConfiguration.AUDIO_BUFFER_NORMAL.equals(bufferMode) ||
-                PreferenceConfiguration.AUDIO_BUFFER_LARGE.equals(bufferMode);
+                PreferenceConfiguration.AUDIO_BUFFER_LARGE.equals(bufferMode) ||
+                PreferenceConfiguration.AUDIO_BUFFER_LOW_LAG.equals(bufferMode);
     }
 
     private int tvBufferTargetMs() {
-        return PreferenceConfiguration.AUDIO_BUFFER_LARGE.equals(bufferMode) ? 60 : 30;
+        if (PreferenceConfiguration.AUDIO_BUFFER_LARGE.equals(bufferMode)) return 60;
+        if (PreferenceConfiguration.AUDIO_BUFFER_LOW_LAG.equals(bufferMode)) return 20;
+        return 30;
+    }
+
+    // How far the adaptive cushion may grow: low lag accepts the odd dropout instead
+    private int tvBufferMaxMs() {
+        if (PreferenceConfiguration.AUDIO_BUFFER_LARGE.equals(bufferMode)) return TV_MAX_TARGET_MS;
+        if (PreferenceConfiguration.AUDIO_BUFFER_LOW_LAG.equals(bufferMode)) return 60;
+        return 150;
     }
 
     private AudioTrack createAudioTrack(int channelConfig, int sampleRate, int bufferSize, boolean lowLatency) {
@@ -389,7 +399,7 @@ private static void bumpAudioPriority() {
         // Adapt the cushion to how bunchy the network is
         if (tvCushionBuilt && playing && queued * 1000 < (long) TV_DRY_MS * tvSampleRate) {
             tvLastDryMs = nowMs;
-            final int maxTarget = (int) ((long) tvSampleRate * TV_MAX_TARGET_MS / 1000);
+            final int maxTarget = (int) ((long) tvSampleRate * tvBufferMaxMs() / 1000);
             if (tvTargetFrames < maxTarget && nowMs - tvLastGrowMs >= TV_GROW_COOLDOWN_MS) {
                 tvTargetFrames = Math.min(maxTarget, tvTargetFrames + tvSampleRate * TV_GROW_MS / 1000);
                 tvLastGrowMs = nowMs;

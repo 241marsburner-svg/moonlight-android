@@ -89,6 +89,8 @@ public final class TvDiagnostics {
         lastReleaseNs = 0;
         releaseIntervalEmaNs = 0;
         lastVideoReceiveMs = 0;
+        lastGapAtMs = 0;
+        gapPeriodEmaMs = 0;
         videoArrivals.set(0); videoBunched.set(0); videoNetGaps.set(0); maxVideoNetGapMs = 0;
         inAppSumMs.set(0); inAppSamples.set(0); maxInAppMs = 0;
         lastAudioArrivalNs = 0; audioArrivalGaps.set(0); maxAudioArrivalGapMs = 0;
@@ -158,6 +160,8 @@ public final class TvDiagnostics {
     private static final AtomicLong audioArrivalGaps = new AtomicLong();
     private static volatile long maxAudioArrivalGapMs;
     private static volatile int boostedThreads = -1;
+    private static long lastGapAtMs;
+    private static volatile long gapPeriodEmaMs;
     private static long snapArrivals, snapBunched, snapNetGaps, snapInAppSum, snapInAppSamples, snapAudioGaps;
 
     /** Video decoder thread: one complete frame came out of the network stack. */
@@ -181,6 +185,15 @@ public final class TvDiagnostics {
                 videoBunched.incrementAndGet();
             }
             if (d > (periodMs * 5) / 2 && d < 2000) {
+                // How regular are the stalls? ~1024 ms points at Wi-Fi power saving (DTIM),
+                // ~1280 ms at Bluetooth scanning, other steady values at a timer somewhere
+                final long lastGap = lastGapAtMs;
+                lastGapAtMs = receiveTimeMs;
+                if (lastGap > 0 && receiveTimeMs - lastGap < 10_000) {
+                    final long iv = receiveTimeMs - lastGap;
+                    final long ema = gapPeriodEmaMs;
+                    gapPeriodEmaMs = (ema == 0) ? iv : ema + (iv - ema) / 4;
+                }
                 videoNetGaps.incrementAndGet();
                 if (d > maxVideoNetGapMs) {
                     maxVideoNetGapMs = d;
@@ -444,8 +457,11 @@ public final class TvDiagnostics {
             snapArrivals = arrivals; snapBunched = bunched; snapNetGaps = netGaps;
             snapInAppSum = inSum; snapInAppSamples = inN; snapAudioGaps = aGaps;
             sb.append(String.format(Locale.US,
-                    "Arrival: video bunched %.0f%% · gaps %.1f/s (longest %d ms) · in app %.1f ms (max %d) · audio gaps %.1f/s (longest %d ms) · boosted threads %d\n",
-                    bunchedPct, netGapsPerSec, maxVideoNetGapMs, inAvg, maxInAppMs, aGapsPerSec, maxAudioArrivalGapMs, boostedThreads));
+                    "Arrival: video bunched %.0f%% · gaps %.1f/s (longest %d ms%s) · in app %.1f ms (max %d) · audio gaps %.1f/s (longest %d ms) · boosted threads %d\n",
+                    bunchedPct, netGapsPerSec, maxVideoNetGapMs,
+                    gapPeriodEmaMs > 0 ? String.format(Locale.US, ", about every %d ms", gapPeriodEmaMs) : "",
+                    inAvg, maxInAppMs, aGapsPerSec, maxAudioArrivalGapMs, boostedThreads));
+            sb.append("Network: ").append(describeNetwork(context)).append('\n');
         }
 
         if (prefs != null && PreferenceConfiguration.isTvPacing(prefs.framePacing)) {
@@ -504,6 +520,53 @@ public final class TvDiagnostics {
             case PreferenceConfiguration.FRAME_PACING_WARP: return "Warp";
             case PreferenceConfiguration.FRAME_PACING_WARP2: return "Warp 2";
             default: return "?";
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private static String describeNetwork(Context context) {
+        try {
+            final android.net.ConnectivityManager cm =
+                    (android.net.ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                final android.net.NetworkCapabilities caps = cm.getNetworkCapabilities(cm.getActiveNetwork());
+                if (caps != null && caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)) {
+                    return "Ethernet";
+                }
+            }
+            final android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager)
+                    context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wm == null) {
+                return "?";
+            }
+            final android.net.wifi.WifiInfo info = wm.getConnectionInfo();
+            if (info == null || info.getNetworkId() == -1 && info.getRssi() <= -127) {
+                return "not on Wi-Fi";
+            }
+            final int mhz = info.getFrequency();
+            final String band = mhz >= 5925 ? "6 GHz" : (mhz >= 4900 ? "5 GHz" : (mhz > 0 ? "2.4 GHz" : "?"));
+            final StringBuilder b = new StringBuilder("Wi-Fi ").append(band);
+            if (mhz > 0) {
+                b.append(" (").append(mhz).append(" MHz)");
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                switch (info.getWifiStandard()) {
+                    case android.net.wifi.ScanResult.WIFI_STANDARD_11N: b.append(" · Wi-Fi 4"); break;
+                    case android.net.wifi.ScanResult.WIFI_STANDARD_11AC: b.append(" · Wi-Fi 5"); break;
+                    case android.net.wifi.ScanResult.WIFI_STANDARD_11AX: b.append(" · Wi-Fi 6"); break;
+                    default: break;
+                }
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                b.append(" · link ").append(info.getRxLinkSpeedMbps()).append('/')
+                        .append(info.getTxLinkSpeedMbps()).append(" Mbps");
+            } else {
+                b.append(" · link ").append(info.getLinkSpeed()).append(" Mbps");
+            }
+            b.append(" · signal ").append(info.getRssi()).append(" dBm");
+            return b.toString();
+        } catch (Throwable t) {
+            return "?";
         }
     }
 

@@ -146,11 +146,13 @@
         <item>@string/audio_buffer_low_latency</item>
         <item>@string/audio_buffer_normal</item>
         <item>@string/audio_buffer_large</item>
+        <item>@string/audio_buffer_low_lag</item>
     </string-array>
     <string-array name="audio_buffer_mode_values" translatable="false">
         <item>lowlatency</item>
         <item>normal</item>
         <item>large</item>
+        <item>lowlag</item>
     </string-array>
 
     <string-array name="analog_scrolling_names">

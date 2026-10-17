@@ -47,8 +47,16 @@ final class TvFramePacer {
     private static final long GAME_GROW_IF_CAPPED_WITHIN_NS = 2_000_000_000L;
     private static final long GAME_SHRINK_AFTER_NS = 20_000_000_000L;
     private int gameLeadFrames = GAME_MIN_LEAD_FRAMES;
-    private long lastCapNs;
+    private long lastCapNs;          // last small overflow (see capRun)
     private long lastLeadChangeNs;
+    // Consecutive capped frames. A short run means a bunch slightly bigger than the buffer
+    // (a bigger buffer would have shown those frames); a long run is the backlog after a long
+    // network stall, which no small buffer can save, so it must not grow the buffer.
+    private int capRun;
+    private static final int GAME_SMALL_CAP_RUN = 2;
+    // Game mode trims after this many frames in a row had a spare frame queued
+    private static final int GAME_TRIM_AFTER_FRAMES = 60;
+    private int spareStreak;
     private static final long GAME_TRIM_WINDOW_NS = 1_000_000_000L;
 
     private volatile boolean gameMode;
@@ -98,6 +106,8 @@ final class TvFramePacer {
         windowStartNs = 0L;
         windowMinLeadNs = Long.MAX_VALUE;
         lastTrimNs = 0L;
+        capRun = 0;
+        spareStreak = 0;
         for (int i = 0; i < PLAN_RING; i++) {
             planSlotNs[i] = 0L;
         }
@@ -203,8 +213,9 @@ final class TvFramePacer {
             ideal = slot;
             lead = slot - earliest;
             capped = true;
-
-            if (game && !streamFasterThanDisplay) {
+            capRun++;
+        } else if (capRun > 0) {
+            if (game && !streamFasterThanDisplay && capRun <= GAME_SMALL_CAP_RUN) {
                 if (lastCapNs != 0L && nowNs - lastCapNs < GAME_GROW_IF_CAPPED_WITHIN_NS &&
                         gameLeadFrames < GAME_MAX_LEAD_FRAMES) {
                     gameLeadFrames++;
@@ -212,6 +223,7 @@ final class TvFramePacer {
                 }
                 lastCapNs = nowNs;
             }
+            capRun = 0;
         }
 
         // Trim buffer that has gone unused for a whole window, keeping one spare frame
@@ -222,10 +234,24 @@ final class TvFramePacer {
         if (lead < windowMinLeadNs) {
             windowMinLeadNs = lead;
         }
-        if (nowNs - windowStartNs >= trimWindowNs) {
+        // Game mode: a spare frame that stays queued for GAME_TRIM_AFTER_FRAMES frames in a row
+        // is pure latency (e.g. the leftover of a burst after a network stall): remove it.
+        boolean gameTrimDue = false;
+        if (game) {
+            if (!capped && lead >= frame - refresh / 2) {
+                if (++spareStreak >= GAME_TRIM_AFTER_FRAMES) {
+                    gameTrimDue = true;
+                    spareStreak = 0;
+                }
+            } else {
+                spareStreak = 0;
+            }
+        }
+        final boolean windowDone = nowNs - windowStartNs >= trimWindowNs;
+        if (gameTrimDue || (!game && windowDone)) {
             // (A capped frame has already given up its extra lead.)
-            if (!capped && windowMinLeadNs >= keepSpareNs + frame - refresh / 2 &&
-                    (nowNs - lastTrimNs) >= trimCooldownNs) {
+            if (!capped && (gameTrimDue || (windowMinLeadNs >= keepSpareNs + frame - refresh / 2 &&
+                    (nowNs - lastTrimNs) >= trimCooldownNs))) {
                 final long step = haveGrid
                         ? Math.max(1L, Math.round(frame / (double) refresh)) * refresh
                         : frame;
@@ -245,6 +271,8 @@ final class TvFramePacer {
                     lastTrimNs = nowNs;
                 }
             }
+        }
+        if (windowDone) {
             windowStartNs = nowNs;
             windowMinLeadNs = Long.MAX_VALUE;
         }

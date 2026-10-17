@@ -53,6 +53,7 @@ public class PreferenceConfiguration {
     public static final String AUDIO_BUFFER_LOW_LATENCY = "lowlatency";
     public static final String AUDIO_BUFFER_NORMAL = "normal";
     public static final String AUDIO_BUFFER_LARGE = "large";
+    public static final String AUDIO_BUFFER_LOW_LAG = "lowlag";
     private static final String DEFAULT_AUDIO_BUFFER_MODE = AUDIO_BUFFER_LOW_LATENCY;
     public String audioBufferMode = DEFAULT_AUDIO_BUFFER_MODE;
 
