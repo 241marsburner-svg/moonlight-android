@@ -633,6 +633,19 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
             );
         }
 
+        // Artemide TV: ask the TV for its low-latency (game) picture mode while we stream.
+        // TVs otherwise run motion smoothing and other processing that adds a lot of delay.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && prefConfig.tvGameMode) {
+            try {
+                getWindow().setPreferMinimalPostProcessing(true);
+                final Display gameModeDisplay = getWindowManager().getDefaultDisplay();
+                com.limelight.binding.video.TvDiagnostics.setMinimalPostProcessing(true,
+                        gameModeDisplay != null && gameModeDisplay.isMinimalPostProcessingSupported());
+            } catch (Throwable t) {
+                LimeLog.warning("Unable to request minimal post processing: " + t);
+            }
+        }
+
         notificationOverlayView = findViewById(R.id.notificationOverlay);
 
         performanceOverlayView = findViewById(R.id.performanceOverlay);
@@ -1533,7 +1546,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 prefConfig.framePacing == PreferenceConfiguration.FRAME_PACING_WARP2 ||
                 prefConfig.framePacing == PreferenceConfiguration.FRAME_PACING_MIN_LATENCY ||
                 prefConfig.framePacing == PreferenceConfiguration.FRAME_PACING_BALANCED ||
-                prefConfig.framePacing == PreferenceConfiguration.FRAME_PACING_TV_SMOOTH ||
+                PreferenceConfiguration.isTvPacing(prefConfig.framePacing) ||
                 prefConfig.reduceRefreshRate ;
     }
 

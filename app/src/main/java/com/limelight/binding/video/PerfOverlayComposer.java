@@ -315,7 +315,7 @@ public final class PerfOverlayComposer {
 
             // Artemide TV: where frames and audio get lost after they arrive
             if (com.limelight.BuildConfig.TV_BUILD ||
-                    prefsSnapshot.framePacing == PreferenceConfiguration.FRAME_PACING_TV_SMOOTH) {
+                    PreferenceConfiguration.isTvPacing(prefsSnapshot.framePacing)) {
                 try {
                     sb.append(TvDiagnostics.buildOverlayBlock(context, prefsSnapshot));
                 } catch (Throwable ignored) { }
@@ -370,6 +370,8 @@ public final class PerfOverlayComposer {
             glyph.append('2');
         } else if (p.framePacing == PreferenceConfiguration.FRAME_PACING_TV_SMOOTH) {
             glyph.append('T');
+        } else if (p.framePacing == PreferenceConfiguration.FRAME_PACING_TV_GAME) {
+            glyph.append('G');
         } else {
             glyph.append('?');
         }

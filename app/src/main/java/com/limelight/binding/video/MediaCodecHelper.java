@@ -551,12 +551,79 @@ public class MediaCodecHelper {
         return decoderSupportsAndroidRLowLatency(decoderInfo, mimeType);
     }
 
+    // What the last format built by setDecoderLowLatencyOptions contained (for the overlay)
+    private static volatile String lastPresetDescription = "";
+
+    public static String getLastPresetDescription() {
+        return lastPresetDescription;
+    }
+
+    /**
+     * Artemide TV ladder for MediaTek decoders. On the TCL C7K every stock MTK preset was
+     * rejected (the overlay showed preset 4, i.e. no low-latency option at all); the key they
+     * all share is KEY_OPERATING_RATE = Short.MAX_VALUE. Here each try drops the riskiest
+     * remaining keys first, and Android's KEY_LOW_LATENCY stays until the last try.
+     */
+    private static boolean setMtkTvLowLatencyOptions(MediaFormat f, boolean ultraLowLatency, int tryNumber) {
+        if (tryNumber > 4) {
+            lastPresetDescription = "plain (no low-latency options accepted)";
+            return false;
+        }
+
+        int frameRate = 60;
+        try {
+            if (f.containsKey(MediaFormat.KEY_FRAME_RATE)) {
+                frameRate = f.getInteger(MediaFormat.KEY_FRAME_RATE);
+            }
+        } catch (Throwable ignored) { }
+        final int operatingRate = Math.min(240, Math.max(60, frameRate) * 2);
+
+        safeSet(f, MediaFormat.KEY_LOW_LATENCY, 1);
+        if (tryNumber <= 3) {
+            safeSet(f, "vdec-lowlatency", 1);
+        }
+        if (tryNumber <= 2) {
+            safeSet(f, MediaFormat.KEY_PRIORITY, 0);
+        }
+        if (tryNumber <= 1) {
+            safeSet(f, "vendor.mtk.vdec.low-latency.mode", 1);
+            safeSet(f, "vendor.mtk.vdec.disable-idle", 1);
+            safeSet(f, "vendor.mtk.vdec.vsync.adjust.enable", 0);
+            safeSet(f, "vendor.mtk.vdec.cpu.boost.mode", 1);
+            safeSet(f, "vendor.mtk.vdec.cpu.boost.mode.value", 1);
+            safeSet(f, "vendor.mtk.vdec.dvfs.mode", 1);
+            safeSet(f, "vendor.mtk.vdec.dvfs.level", 1);
+            if (ultraLowLatency) {
+                safeSet(f, "vendor.mtk.vdec.ultra-low-latency", 1);
+            }
+        }
+        if (tryNumber == 0) {
+            safeSet(f, MediaFormat.KEY_OPERATING_RATE, operatingRate);
+        }
+
+        switch (tryNumber) {
+            case 0: lastPresetDescription = "MTK full: low-latency + vendor boost + rate " + operatingRate; break;
+            case 1: lastPresetDescription = "MTK: low-latency + vendor boost"; break;
+            case 2: lastPresetDescription = "low-latency + realtime priority"; break;
+            case 3: lastPresetDescription = "low-latency (Android + MTK)"; break;
+            default: lastPresetDescription = "low-latency (Android only)"; break;
+        }
+        LimeLog.info("Artemide TV decoder try " + tryNumber + ": " + lastPresetDescription);
+        return true;
+    }
+
     public static boolean setDecoderLowLatencyOptions(MediaFormat videoFormat, MediaCodecInfo decoderInfo, boolean ultraLowLatency, int tryNumber) {
         // Options here should be tried in the order of most to least risky. The decoder will use
         // the first MediaFormat that doesn't fail in configure().
 
         boolean setNewOption = false;
         final boolean forceMtkFullSpeed = mtkFullSpeedHints && isMtkDecoder(decoderInfo.getName());
+        lastPresetDescription = "generic try " + tryNumber;
+
+        // Artemide TV: own ladder for MediaTek decoders (see setMtkTvLowLatencyOptions)
+        if (forceMtkFullSpeed && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            return setMtkTvLowLatencyOptions(videoFormat, ultraLowLatency, tryNumber);
+        }
 
 //derflacco
         // NVIDIA Tegra extra low-latency toggles

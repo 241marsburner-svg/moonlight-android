@@ -128,6 +128,7 @@
         <item>@string/pacing_smoothness</item>
         <item>@string/pacing_gpu_raw</item>
         <item>@string/pacing_tv_smooth</item>
+        <item>@string/pacing_tv_game</item>
     </string-array>
     <string-array name="video_frame_pacing_values" translatable="false">
         <item>warp2</item>
@@ -138,6 +139,7 @@
         <item>smoothness</item>
         <item>gpu-raw</item>
         <item>tv</item>
+        <item>tvgame</item>
     </string-array>
 
     <string-array name="audio_buffer_mode_names">

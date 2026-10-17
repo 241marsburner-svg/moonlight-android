@@ -149,7 +149,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
     private boolean computeAsyncPreferLowerDelaysFromCurrentPrefs(int effectivePacing) {
         // TV smooth must see every decoded frame; "latest only" would throw bunched frames away.
-        if (effectivePacing == PreferenceConfiguration.FRAME_PACING_TV_SMOOTH) {
+        if (PreferenceConfiguration.isTvPacing(effectivePacing)) {
             return false;
         }
 
@@ -1034,7 +1034,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             return;
         }
         if (!BuildConfig.TV_BUILD &&
-                !(prefs != null && prefs.framePacing == PreferenceConfiguration.FRAME_PACING_TV_SMOOTH)) {
+                !(prefs != null && PreferenceConfiguration.isTvPacing(prefs.framePacing))) {
             return;
         }
 
@@ -1186,7 +1186,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             // Throw the underlying codec exception on the last attempt if the caller requested it
             if (tryConfigureDecoder(selectedDecoderInfo, mediaFormat, !newFormat && throwOnCodecError)) {
                 // Success!
-                TvDiagnostics.setDecoderConfigTry(tryNumber);
+                TvDiagnostics.setDecoderConfigTry(tryNumber, MediaCodecHelper.getLastPresetDescription());
                 break;
             }
 
@@ -1844,7 +1844,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                             // producing frames while old buffers are released.
                             // (Never in TV smooth: it shows every frame and handles bunches itself.)
                             if (!useAsyncCodec && syncLfrEnabled &&
-                                    pacingMode != PreferenceConfiguration.FRAME_PACING_TV_SMOOTH) {
+                                    !PreferenceConfiguration.isTvPacing(pacingMode)) {
                                 int drained = 0;
 
                                 while (drained < SYNC_LFR_MAX_DRAIN_PER_TICK &&
@@ -1901,7 +1901,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                                         (lastFlags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
 
                                 final boolean useNanoPacer = (prefs != null && prefs.fastVsync) &&
-                                        pacingMode != PreferenceConfiguration.FRAME_PACING_TV_SMOOTH;
+                                        !PreferenceConfiguration.isTvPacing(pacingMode);
 
                                 if (useNanoPacer) {
                                     final float rrHz =
@@ -2203,7 +2203,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
     // Artemide TV: the refresh grid TV smooth pacing snaps frames to
     private void startTvVsyncClockIfNeeded() {
-        if (prefs == null || prefs.framePacing != PreferenceConfiguration.FRAME_PACING_TV_SMOOTH) {
+        if (prefs == null || !PreferenceConfiguration.isTvPacing(prefs.framePacing)) {
             return;
         }
         try {
@@ -2310,6 +2310,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         if ("warp".equals(v)) return PreferenceConfiguration.FRAME_PACING_WARP;
         if ("warp2".equals(v)) return PreferenceConfiguration.FRAME_PACING_WARP2;
         if ("tv".equals(v)) return PreferenceConfiguration.FRAME_PACING_TV_SMOOTH;
+        if ("tvgame".equals(v)) return PreferenceConfiguration.FRAME_PACING_TV_GAME;
 
         return PreferenceConfiguration.FRAME_PACING_MIN_LATENCY;
     }
@@ -2410,9 +2411,9 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         }
 
         // Artemide TV: the refresh grid is only needed while TV smooth is active
-        if (newPacing == PreferenceConfiguration.FRAME_PACING_TV_SMOOTH) {
+        if (PreferenceConfiguration.isTvPacing(newPacing)) {
             startTvVsyncClockIfNeeded();
-        } else if (oldPacing == PreferenceConfiguration.FRAME_PACING_TV_SMOOTH) {
+        } else if (PreferenceConfiguration.isTvPacing(oldPacing)) {
             tvPacer.stopVsyncClock();
         }
 
@@ -3678,7 +3679,8 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     private void releaseBufferAccordingToMode(int bufferIndex, long presentationTimeUs) {
         TvDiagnostics.onFrameReleased();
 
-        if (prefs.framePacing == PreferenceConfiguration.FRAME_PACING_TV_SMOOTH) {
+        if (PreferenceConfiguration.isTvPacing(prefs.framePacing)) {
+            tvPacer.setGameMode(prefs.framePacing == PreferenceConfiguration.FRAME_PACING_TV_GAME);
             // Hand the frame to SurfaceFlinger right away with an evenly spaced presentation
             // time; SurfaceFlinger holds it until then (see TvFramePacer).
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -3920,6 +3922,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             case PreferenceConfiguration.FRAME_PACING_WARP:
             case PreferenceConfiguration.FRAME_PACING_WARP2:
             case PreferenceConfiguration.FRAME_PACING_TV_SMOOTH:
+            case PreferenceConfiguration.FRAME_PACING_TV_GAME:
                 return Process.THREAD_PRIORITY_URGENT_DISPLAY;
 
             case PreferenceConfiguration.FRAME_PACING_BALANCED:

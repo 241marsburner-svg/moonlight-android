@@ -262,7 +262,7 @@ public class StreamSettings extends AppCompatActivity {
             // TV smooth paces through SurfaceFlinger like Balanced does through Choreographer,
             // so the extra V-Sync options don't apply to it either.
             final boolean balancedSelected = "balanced".equals(framePacingValue)
-                    || "tv".equals(framePacingValue);
+                    || "tv".equals(framePacingValue) || "tvgame".equals(framePacingValue);
 
             // GlUpscale active if either GPUPath is enabled or Upscaling (FSR-like) is enabled
             final boolean glUpscaleActive =

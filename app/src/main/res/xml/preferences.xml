@@ -229,6 +229,13 @@
 
         <CheckBoxPreference
             android:defaultValue="false"
+            android:key="checkbox_tv_game_mode"
+            android:summary="@string/summary_tv_game_mode"
+            android:title="@string/title_tv_game_mode"
+            app:iconSpaceReserved="false" />
+
+        <CheckBoxPreference
+            android:defaultValue="false"
             android:key="checkbox_mtk_full_speed_hints"
             android:summary="@string/summary_mtk_full_speed_hints"
             android:title="@string/title_mtk_full_speed_hints"

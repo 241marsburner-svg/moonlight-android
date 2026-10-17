@@ -66,6 +66,10 @@ public class PreferenceConfiguration {
     // requesting a keyframe after ~5 ms. Always on in the TV build.
     public boolean patientDecoderInput = false;
 
+    // Ask the TV for minimal post-processing (its game picture mode) while streaming
+    public static final String TV_GAME_MODE_PREF_STRING = "checkbox_tv_game_mode";
+    public boolean tvGameMode = false;
+
     // CpuWarmUp (read from prefs)
     public boolean cpuWarmUpEnable;
 
@@ -335,6 +339,13 @@ public class PreferenceConfiguration {
     // presentation time (a small jitter buffer that lives in SurfaceFlinger), so frames
     // that arrive in bunches over Wi-Fi are shown one per refresh instead of dropped.
     public static final int FRAME_PACING_TV_SMOOTH = 7;
+    // TV game: the same refresh-grid pacing with at most one frame of buffer, for the lowest
+    // input delay that is still free of Wi-Fi bunching drops.
+    public static final int FRAME_PACING_TV_GAME = 8;
+
+    public static boolean isTvPacing(int mode) {
+        return mode == FRAME_PACING_TV_SMOOTH || mode == FRAME_PACING_TV_GAME;
+    }
     public static final String RES_360P = "640x360";
     public static final String RES_480P = "854x480";
     public static final String RES_720P = "1280x720";
@@ -831,6 +842,8 @@ public class PreferenceConfiguration {
             return FRAME_PACING_WARP2;
         } else if ("tv".equals(str)) {
             return FRAME_PACING_TV_SMOOTH;
+        } else if ("tvgame".equals(str)) {
+            return FRAME_PACING_TV_GAME;
         } else {
             return FRAME_PACING_MIN_LATENCY;
         }
@@ -1220,6 +1233,7 @@ public class PreferenceConfiguration {
         }
         config.mtkFullSpeedHints = prefs.getBoolean(MTK_FULL_SPEED_HINTS_PREF_STRING, DEFAULT_MTK_FULL_SPEED_HINTS);
         config.patientDecoderInput = com.limelight.BuildConfig.TV_BUILD;
+        config.tvGameMode = prefs.getBoolean(TV_GAME_MODE_PREF_STRING, com.limelight.BuildConfig.TV_BUILD);
 
         // Read custom values
         config.customResolution = prefs.getString(CUSTOM_RESOLUTION_PREF_STRING, null);

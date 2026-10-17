@@ -56,6 +56,7 @@ public final class TvDiagnostics {
     private static volatile String decoderLowLatencyFeature = "?";
     private static volatile boolean mtkFullSpeedHintsApplied;
     private static volatile int decoderConfigTry = -1;
+    private static volatile String decoderPreset = "";
     private static final AtomicLong inputWaits = new AtomicLong();
     private static volatile long maxInputWaitNs;
     private static final AtomicLong keyframeRequests = new AtomicLong();
@@ -66,6 +67,9 @@ public final class TvDiagnostics {
     private static volatile int audioUnderruns;
     private static final AtomicLong audioSkipped = new AtomicLong();
     private static final AtomicLong audioReprimes = new AtomicLong();
+    private static final AtomicLong audioTrimmed = new AtomicLong();
+    private static volatile int audioLevelMs = -1;
+    private static volatile int audioMinLevelMs = -1;
 
     // --- Overlay rate computation (UI thread only) ---
     private static long snapNs;
@@ -80,6 +84,8 @@ public final class TvDiagnostics {
         displayGaps.set(0);
         lastDisplayNs = 0;
         maxDisplayIntervalNs = 0;
+        lastReleaseNs = 0;
+        releaseIntervalEmaNs = 0;
         pacerLate.set(0);
         pacerTrims.set(0);
         pacerCapped.set(0);
@@ -113,8 +119,30 @@ public final class TvDiagnostics {
         }
     }
 
+    // Smoothed interval between frames handed to the display (the real stream rate, which
+    // can be lower than the configured one, e.g. an idle desktop sent at 30 fps)
+    private static volatile long lastReleaseNs;
+    private static volatile long releaseIntervalEmaNs;
+
     static void onFrameReleased() {
         framesReleased.incrementAndGet();
+        final long now = System.nanoTime();
+        final long last = lastReleaseNs;
+        lastReleaseNs = now;
+        if (last != 0 && now > last) {
+            final long d = now - last;
+            if (d < 250_000_000L) {
+                final long ema = releaseIntervalEmaNs;
+                releaseIntervalEmaNs = (ema == 0) ? d : ema + (d - ema) / 16;
+            }
+        }
+    }
+
+    // TV picture mode request (setPreferMinimalPostProcessing)
+    private static volatile String gameModeState = "off";
+
+    public static void setMinimalPostProcessing(boolean requested, boolean supported) {
+        gameModeState = !requested ? "off" : (supported ? "on" : "requested, TV says unsupported");
     }
 
     /** Called from MediaCodec.OnFrameRenderedListener with the real display time. */
@@ -126,7 +154,8 @@ public final class TvDiagnostics {
             final long interval = renderNs - last;
             // A gap is a refresh where the previous frame had to stay on screen longer than
             // expected. Ignore long pauses (menus, static desktop) above 250 ms.
-            if (interval > (expectedFramePeriodNs * 3) / 2 && interval < 250_000_000L) {
+            final long period = Math.max(expectedFramePeriodNs, releaseIntervalEmaNs);
+            if (interval > (period * 3) / 2 && interval < 250_000_000L) {
                 displayGaps.incrementAndGet();
                 if (interval > maxDisplayIntervalNs) {
                     maxDisplayIntervalNs = interval;
@@ -202,8 +231,9 @@ public final class TvDiagnostics {
         mtkFullSpeedHintsApplied = applied;
     }
 
-    static void setDecoderConfigTry(int tryNumber) {
+    static void setDecoderConfigTry(int tryNumber, String description) {
         decoderConfigTry = tryNumber;
+        decoderPreset = (description != null) ? description : "";
     }
 
     static void onInputWait(long waitedNs) {
@@ -223,6 +253,9 @@ public final class TvDiagnostics {
         audioUnderruns = 0;
         audioSkipped.set(0);
         audioReprimes.set(0);
+        audioTrimmed.set(0);
+        audioLevelMs = -1;
+        audioMinLevelMs = -1;
         snapUnderruns = 0;
         snapSkipped = 0;
     }
@@ -230,6 +263,17 @@ public final class TvDiagnostics {
     /** The audio cushion had to be refilled with silence (audio was lost, not just late). */
     public static void onAudioReprimed() {
         audioReprimes.incrementAndGet();
+    }
+
+    /** One packet dropped on purpose because more audio than needed was queued (latency). */
+    public static void onAudioTrimmed() {
+        audioTrimmed.incrementAndGet();
+    }
+
+    /** Audio queued in the track now, and the lowest level during the last second (ms). */
+    public static void setAudioLevel(int nowMs, int minMs) {
+        audioLevelMs = nowMs;
+        audioMinLevelMs = minMs;
     }
 
     public static void setAudioUnderruns(int underruns) {
@@ -297,7 +341,9 @@ public final class TvDiagnostics {
 
         // Display mode as the system reports it right now
         sb.append("Display: ").append(describeDisplay(context));
-        sb.append(" · pacing ").append(describePacing(prefs)).append('\n');
+        sb.append(" · pacing ").append(describePacing(prefs))
+                .append(" · TV game mode ").append(gameModeState)
+                .append(" · Android ").append(Build.VERSION.RELEASE).append(" (API ").append(Build.VERSION.SDK_INT).append(")\n");
 
         // What actually reached the screen
         if (displayed > 0) {
@@ -307,7 +353,7 @@ public final class TvDiagnostics {
             sb.append(String.format(Locale.US, "Sent to display %.1f fps (no render callbacks)\n", releasedFps));
         }
 
-        if (prefs != null && prefs.framePacing == PreferenceConfiguration.FRAME_PACING_TV_SMOOTH) {
+        if (prefs != null && PreferenceConfiguration.isTvPacing(prefs.framePacing)) {
             sb.append(String.format(Locale.US, "Jitter buffer +%.1f ms (max %d ms) · late %.1f/s · trims %d · capped %d\n",
                     avgLeadMs, maxLeadNs / 1_000_000L, latePerSec, trims, pacerCapped.get()));
 
@@ -329,14 +375,18 @@ public final class TvDiagnostics {
 
         sb.append("Decoder: low-latency ").append(decoderLowLatencyFeature)
                 .append(" · MTK full-speed ").append(mtkFullSpeedHintsApplied ? "on" : "off")
-                .append(" · preset ").append(decoderConfigTry)
+                .append(" · preset ").append(decoderConfigTry).append(" (").append(decoderPreset).append(')')
                 .append(String.format(Locale.US, " · input waits %d (max %d ms) · keyframe req %d\n",
                         waits, maxInputWaitNs / 1_000_000L, keyframes));
 
         sb.append("Audio: ").append(audioTrackMode).append(' ').append(audioBufferMs).append(" ms")
                 .append(" · underruns ").append(underruns)
                 .append(" · refilled ").append(audioReprimes.get())
+                .append(" · trimmed ").append(audioTrimmed.get())
                 .append(" · skipped ").append(skipped);
+        if (audioLevelMs >= 0) {
+            sb.append(" · queued ").append(audioLevelMs).append(" ms (low ").append(audioMinLevelMs).append(" ms)");
+        }
 
         return sb.toString();
     }
@@ -347,6 +397,7 @@ public final class TvDiagnostics {
         }
         switch (prefs.framePacing) {
             case PreferenceConfiguration.FRAME_PACING_TV_SMOOTH: return "TV smooth";
+            case PreferenceConfiguration.FRAME_PACING_TV_GAME: return "TV game";
             case PreferenceConfiguration.FRAME_PACING_BALANCED: return "Balanced";
             case PreferenceConfiguration.FRAME_PACING_MIN_LATENCY: return "Lowest latency";
             case PreferenceConfiguration.FRAME_PACING_MAX_SMOOTHNESS: return "Smoothest";

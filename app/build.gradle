@@ -111,6 +111,12 @@ android {
         resources {
             pickFirsts.add('META-INF/versions/9/OSGI-INF/MANIFEST.MF')
         }
+        // TV CI build: the TV is ARM, so leave out the x86 libraries some dependencies ship
+        if (project.hasProperty('armOnly')) {
+            jniLibs {
+                excludes.addAll(['lib/x86/**', 'lib/x86_64/**'])
+            }
+        }
     }
 
     buildTypes {

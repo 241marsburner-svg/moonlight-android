@@ -39,6 +39,12 @@ final class TvFramePacer {
     // The adaptive margin grows by a quarter refresh per step, at most this often
     private static final long ADAPT_COOLDOWN_NS = 300_000_000L;
 
+    // TV game mode: at most one frame of buffer, trimmed quickly, no extra pipeline margin
+    private static final float GAME_MAX_LEAD_FRAMES = 1.0f;
+    private static final long GAME_TRIM_WINDOW_NS = 1_000_000_000L;
+
+    private volatile boolean gameMode;
+
     private final TvVsyncClock vsyncClock = new TvVsyncClock();
     private final long[] grid = new long[4];
 
@@ -65,6 +71,10 @@ final class TvFramePacer {
     private final long[] planPtsUs = new long[PLAN_RING];
     private final long[] planSlotNs = new long[PLAN_RING];
     private int planPos;
+
+    void setGameMode(boolean enabled) {
+        gameMode = enabled;
+    }
 
     void startVsyncClock(Display display) {
         vsyncClock.start(display);
@@ -117,6 +127,12 @@ final class TvFramePacer {
      */
     synchronized long scheduleNextFrame(final long nowNs, final long ptsUs) {
         final long frame = framePeriodNs;
+        final boolean game = gameMode;
+        final float maxLeadFrames = game ? GAME_MAX_LEAD_FRAMES : MAX_LEAD_FRAMES;
+        final long trimWindowNs = game ? GAME_TRIM_WINDOW_NS : TRIM_WINDOW_NS;
+        final long trimCooldownNs = game ? GAME_TRIM_WINDOW_NS : TRIM_COOLDOWN_NS;
+        // Smooth mode keeps one spare frame; game mode keeps none
+        final long keepSpareNs = game ? 0L : frame;
         final boolean haveGrid = vsyncClock.snapshot(nowNs, grid);
         final long refresh = haveGrid ? grid[1] : frame;
         final boolean presentationGrid = haveGrid && grid[3] != 0L;
@@ -126,7 +142,7 @@ final class TvFramePacer {
         // SurfaceFlinger takes a buffer for a refresh at (refresh time - pipeline)
         final long basePipeline = (presentationGrid && grid[2] > 0L)
                 ? grid[2]
-                : refresh + LEGACY_PIPELINE_EXTRA_NS;
+                : refresh + (game ? 0L : LEGACY_PIPELINE_EXTRA_NS);
         final long pipeline = basePipeline + adaptiveExtraNs;
         final long minPresentNs = nowNs + pipeline + QUEUE_SAFETY_NS;
 
@@ -158,8 +174,8 @@ final class TvFramePacer {
         // Hard cap on the latency the buffer may add
         boolean capped = false;
         final long maxLead = haveGrid
-                ? Math.max(1L, Math.round(MAX_LEAD_FRAMES * frame / (double) refresh)) * refresh
-                : (long) (MAX_LEAD_FRAMES * frame);
+                ? Math.max(1L, Math.round(maxLeadFrames * frame / (double) refresh)) * refresh
+                : (long) (maxLeadFrames * frame);
         if (lead > maxLead) {
             slot = earliest + maxLead;
             // Replace at most the previous frame, never frames queued before it
@@ -179,10 +195,10 @@ final class TvFramePacer {
         if (lead < windowMinLeadNs) {
             windowMinLeadNs = lead;
         }
-        if (nowNs - windowStartNs >= TRIM_WINDOW_NS) {
+        if (nowNs - windowStartNs >= trimWindowNs) {
             // (A capped frame has already given up its extra lead.)
-            if (!capped && windowMinLeadNs >= 2 * frame - refresh / 2 &&
-                    (nowNs - lastTrimNs) >= TRIM_COOLDOWN_NS) {
+            if (!capped && windowMinLeadNs >= keepSpareNs + frame - refresh / 2 &&
+                    (nowNs - lastTrimNs) >= trimCooldownNs) {
                 final long step = haveGrid
                         ? Math.max(1L, Math.round(frame / (double) refresh)) * refresh
                         : frame;

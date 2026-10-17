@@ -37,20 +37,29 @@ private static void bumpAudioPriority() {
     private long nextUnderrunPollMs;
 
     // ---- Artemide TV jitter cushion ----
-    // The track keeps 'tvTargetFrames' of audio queued (its effective buffer size), so a
-    // network gap shorter than that is never heard. If the cushion is lost (packets lost
-    // rather than delayed), it is rebuilt with a little silence.
+    // The track keeps about 'tvTargetFrames' of audio queued, so a network gap shorter than
+    // that is never heard. Writes never block (a blocked decoder thread is what made the old
+    // code skip audio); instead the queued amount is measured and steered:
+    //  - stays above target + TV_TRIM_SLACK_MS for a whole second -> drop one packet (latency)
+    //  - stays under a quarter of the target -> refill with a little silence (cushion lost)
     private static final int TV_CAPACITY_MS = 250;
-    // Backlog allowed behind a full cushion before audio is skipped (at least this much, or
-    // the cushion size if larger: TVs with big mixer periods briefly hold writes back)
-    private static final int TV_MIN_MAX_PENDING_MS = 40;
-    private static final long TV_REPRIME_AFTER_MS = 300;
+    private static final int TV_HEADROOM_MS = 60;
+    private static final int TV_TRIM_SLACK_MS = 15;
+    private static final long TV_REFILL_AFTER_MS = 150;
+    private static final long TV_TRIM_SPACING_MS = 250;
+    private static final int TV_MAX_PENDING_MS = 200;
     private boolean tvMode;
     private int tvChannelCount;
+    private int tvSampleRate;
     private int tvTargetFrames;
     private long tvFramesWritten;
     private long tvLowSinceMs;
     private boolean tvCushionBuilt;
+    private long tvWindowStartMs;
+    private long tvWindowMinFrames = Long.MAX_VALUE;
+    private long tvLastWindowMinFrames = -1;
+    private long tvLastTrimMs;
+    private long tvNextLevelReportMs;
 
     private AudioTrack track;
 
@@ -70,7 +79,7 @@ private static void bumpAudioPriority() {
     }
 
     private int tvBufferTargetMs() {
-        return PreferenceConfiguration.AUDIO_BUFFER_LARGE.equals(bufferMode) ? 100 : 50;
+        return PreferenceConfiguration.AUDIO_BUFFER_LARGE.equals(bufferMode) ? 60 : 30;
     }
 
     private AudioTrack createAudioTrack(int channelConfig, int sampleRate, int bufferSize, boolean lowLatency) {
@@ -143,11 +152,10 @@ private static void bumpAudioPriority() {
 
         bytesPerFrame = audioConfiguration.channelCount * samplesPerFrame * 2;
 
-        // Artemide TV: a normal (non-FAST) track that keeps a ~50 ms (or ~100 ms) cushion of
-        // audio queued. TVs run their sound through extra processing and often can't keep the
-        // tiny low-latency buffer fed, and Wi-Fi delivers audio in bunches: both are heard as
-        // stutter. The track's capacity is larger; its effective buffer size is the cushion,
-        // which is also the level playback starts at.
+        // Artemide TV: a track that keeps a ~30 ms (or ~60 ms) cushion of audio queued. TVs run
+        // sound through extra processing and Wi-Fi delivers audio in bunches; a tiny buffer runs
+        // dry (stutter). A low-latency (FAST) track is tried first because it avoids the TV's
+        // slower sound path; its capacity is large, the cushion is steered in playDecodedAudioTv.
         if (isTvBufferMode()) {
             final int targetMs = tvBufferTargetMs();
             final int sampleFrameBytes = audioConfiguration.channelCount * 2;
@@ -159,48 +167,62 @@ private static void bumpAudioPriority() {
             // Round to whole Opus frames
             capacityBytes = (((capacityBytes + (bytesPerFrame - 1)) / bytesPerFrame) * bytesPerFrame);
 
-            try {
-                track = createAudioTrack(channelConfig, sampleRate, capacityBytes, false);
-
-                final int wantFrames = (int) ((long) sampleRate * targetMs / 1000);
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    track.setBufferSizeInFrames(wantFrames);
+            for (int attempt = 0; attempt < 2 && track == null; attempt++) {
+                final boolean lowLatency = (attempt == 0);
+                if (lowLatency && (enableAudioFx ||
+                        AudioTrack.getNativeOutputSampleRate(AudioManager.STREAM_MUSIC) != sampleRate)) {
+                    continue;
                 }
-                // The system may round the cushion up to what its mixer needs
-                int cushionFrames = wantFrames;
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    final int effective = track.getBufferSizeInFrames();
-                    if (effective > 0) {
-                        cushionFrames = effective;
-                    }
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    try {
-                        track.setStartThresholdInFrames(cushionFrames);
-                    } catch (Throwable ignored) { }
-                }
-
-                track.play();
-
-                tvMode = true;
-                tvChannelCount = audioConfiguration.channelCount;
-                tvTargetFrames = cushionFrames;
-                tvFramesWritten = 0;
-                tvLowSinceMs = 0;
-                tvCushionBuilt = false;
-                maxPendingAudioMs = Math.max(TV_MIN_MAX_PENDING_MS,
-                        (int) ((cushionFrames * 1000L) / sampleRate));
-                LimeLog.info("Audio track configuration (TV " + bufferMode + "): capacity " + capacityBytes +
-                        " bytes, cushion " + cushionFrames + " frames");
-            } catch (Exception e) {
-                e.printStackTrace();
                 try {
-                    if (track != null) {
-                        track.release();
+                    track = createAudioTrack(channelConfig, sampleRate, capacityBytes, lowLatency);
+                    if (track.getState() != AudioTrack.STATE_INITIALIZED) {
+                        throw new IllegalStateException("track not initialized");
                     }
-                } catch (Exception ignored) {}
-                track = null;
-                tvMode = false;
+
+                    final int cushionFrames = (int) ((long) sampleRate * targetMs / 1000);
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        // Room for the cushion plus bursts; non-blocking writes stop at this size
+                        int capacityFrames = track.getBufferCapacityInFrames();
+                        int want = cushionFrames + (int) ((long) sampleRate * TV_HEADROOM_MS / 1000);
+                        if (capacityFrames > 0) {
+                            want = Math.min(want, capacityFrames);
+                        }
+                        track.setBufferSizeInFrames(want);
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        try {
+                            // Start playing once the cushion is there (older versions wait for a full buffer)
+                            track.setStartThresholdInFrames(cushionFrames);
+                        } catch (Throwable ignored) { }
+                    }
+
+                    track.play();
+
+                    tvMode = true;
+                    tvChannelCount = audioConfiguration.channelCount;
+                    tvSampleRate = sampleRate;
+                    tvTargetFrames = cushionFrames;
+                    tvFramesWritten = 0;
+                    tvLowSinceMs = 0;
+                    tvCushionBuilt = false;
+                    tvWindowStartMs = 0;
+                    tvWindowMinFrames = Long.MAX_VALUE;
+                    tvLastWindowMinFrames = -1;
+                    tvLastTrimMs = 0;
+                    maxPendingAudioMs = TV_MAX_PENDING_MS;
+                    LimeLog.info("Audio track configuration (TV " + bufferMode + ", " +
+                            (lowLatency ? "low latency" : "normal") + "): capacity " + capacityBytes +
+                            " bytes, cushion " + cushionFrames + " frames");
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    try {
+                        if (track != null) {
+                            track.release();
+                        }
+                    } catch (Exception ignored) {}
+                    track = null;
+                    tvMode = false;
+                }
             }
         }
 
@@ -301,51 +323,99 @@ private static void bumpAudioPriority() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 bufferMs = (int) ((track.getBufferSizeInFrames() * 1000L) / sampleRate);
             }
-            final String mode = tvMode ? "cushion" : (lowLatencyTrack ? "low-latency" : "normal");
+            if (tvMode) {
+                bufferMs = (int) ((tvTargetFrames * 1000L) / sampleRate);
+            }
+            final String mode = (tvMode ? "cushion " : "") + (lowLatencyTrack ? "low-latency" : "normal");
             TvDiagnostics.setAudioTrackInfo(mode, bufferMs);
         } catch (Throwable ignored) {}
 
         return 0;
     }
 
-    // Artemide TV: keep the cushion, rebuild it with silence if it stays half empty
+    // Artemide TV: keep the cushion near its target without ever blocking the decoder thread
     private void playDecodedAudioTv(short[] audioData) {
         final int frames = audioData.length / tvChannelCount;
+        final long nowMs = android.os.SystemClock.uptimeMillis();
 
-        long queued = tvFramesWritten - (track.getPlaybackHeadPosition() & 0xFFFFFFFFL);
+        final long head = track.getPlaybackHeadPosition() & 0xFFFFFFFFL;
+        long queued = tvFramesWritten - head;
         if (queued < 0) {
             queued = 0;
+        }
+        final boolean playing = head > 0;
+
+        // Lowest level over each second: the mixer drains in chunks, so only the minimum says
+        // how much spare audio there really is
+        if (tvWindowStartMs == 0) {
+            tvWindowStartMs = nowMs;
+        }
+        if (queued < tvWindowMinFrames) {
+            tvWindowMinFrames = queued;
+        }
+        if (nowMs - tvWindowStartMs >= 1000) {
+            tvLastWindowMinFrames = tvWindowMinFrames;
+            tvWindowMinFrames = Long.MAX_VALUE;
+            tvWindowStartMs = nowMs;
+        }
+
+        if (nowMs >= tvNextLevelReportMs) {
+            tvNextLevelReportMs = nowMs + 500;
+            TvDiagnostics.setAudioLevel((int) (queued * 1000 / tvSampleRate),
+                    tvLastWindowMinFrames < 0 ? -1 : (int) (tvLastWindowMinFrames * 1000 / tvSampleRate));
         }
 
         if (queued >= tvTargetFrames / 2) {
             tvCushionBuilt = true;
             tvLowSinceMs = 0;
-        } else if (tvCushionBuilt) {
-            final long nowMs = android.os.SystemClock.uptimeMillis();
+        } else if (tvCushionBuilt && queued < tvTargetFrames / 4) {
             if (tvLowSinceMs == 0) {
                 tvLowSinceMs = nowMs;
-            } else if (nowMs - tvLowSinceMs >= TV_REPRIME_AFTER_MS) {
-                // Audio came back without the backlog (lost, not late): refill the cushion
+            } else if (nowMs - tvLowSinceMs >= TV_REFILL_AFTER_MS) {
+                // Audio came back without its backlog (lost, not late): refill the cushion
                 final long silenceFrames = tvTargetFrames - queued - frames;
                 if (silenceFrames > 0) {
                     final short[] silence = new short[(int) silenceFrames * tvChannelCount];
-                    track.write(silence, 0, silence.length);
-                    tvFramesWritten += silenceFrames;
+                    tvFramesWritten += writeTv(silence) / tvChannelCount;
                     TvDiagnostics.onAudioReprimed();
                 }
                 tvLowSinceMs = 0;
             }
         }
 
-        // A backlog behind a full cushion means extra latency: skip it instead
-        if (MoonBridge.getPendingAudioDuration() < maxPendingAudioMs) {
-            bumpAudioPriority();
-            // Blocks while the cushion is full; that is what keeps it at its target size
-            track.write(audioData, 0, audioData.length);
-            tvFramesWritten += frames;
-        } else {
+        // More queued than needed for a whole second: drop one packet to bring latency down
+        final long slackFrames = (long) tvSampleRate * TV_TRIM_SLACK_MS / 1000;
+        if (playing && tvLastWindowMinFrames > tvTargetFrames + slackFrames &&
+                nowMs - tvLastTrimMs >= TV_TRIM_SPACING_MS) {
+            tvLastTrimMs = nowMs;
+            tvLastWindowMinFrames -= frames;
+            TvDiagnostics.onAudioTrimmed();
+            return;
+        }
+
+        // Safety net only: with non-blocking writes nothing should pile up behind the track
+        if (MoonBridge.getPendingAudioDuration() >= maxPendingAudioMs) {
+            TvDiagnostics.onAudioSkipped();
+            return;
+        }
+
+        bumpAudioPriority();
+        final int written = writeTv(audioData);
+        tvFramesWritten += written / tvChannelCount;
+        if (written < audioData.length) {
+            // The track is full (a burst bigger than the headroom): the rest is dropped
             TvDiagnostics.onAudioSkipped();
         }
+    }
+
+    private int writeTv(short[] data) {
+        final int n;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            n = track.write(data, 0, data.length, AudioTrack.WRITE_NON_BLOCKING);
+        } else {
+            n = track.write(data, 0, data.length);
+        }
+        return Math.max(0, n);
     }
 
     @Override

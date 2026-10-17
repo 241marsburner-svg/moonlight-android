@@ -17,7 +17,7 @@ import com.limelight.LimeLog;
  */
 public final class TvDefaults {
     // Bump when new defaults are added; only keys that are still unset get written.
-    private static final int DEFAULTS_VERSION = 1;
+    private static final int DEFAULTS_VERSION = 2;
     private static final String DEFAULTS_VERSION_KEY = "artemide_tv_defaults_version";
 
     private TvDefaults() {}
@@ -29,11 +29,19 @@ public final class TvDefaults {
 
         try {
             final SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(context);
-            if (sp.getInt(DEFAULTS_VERSION_KEY, 0) >= DEFAULTS_VERSION) {
+            final int applied = sp.getInt(DEFAULTS_VERSION_KEY, 0);
+            if (applied >= DEFAULTS_VERSION) {
                 return;
             }
 
             final SharedPreferences.Editor e = sp.edit();
+
+            // v2: games first. TV game pacing replaces TV smooth if that was still our default,
+            // and the TV is asked for its low-latency picture mode.
+            if (applied >= 1 && "tv".equals(sp.getString("frame_pacing", null))) {
+                e.putString("frame_pacing", "tvgame");
+            }
+            putBooleanIfAbsent(sp, e, "checkbox_tv_game_mode", true);
 
             // Stream: 1440p60 HEVC (the app's own default bitrate for this is 40 Mbps)
             putStringIfAbsent(sp, e, "list_resolution", "2560x1440");
@@ -41,7 +49,7 @@ public final class TvDefaults {
             putStringIfAbsent(sp, e, "video_format", "forceh265");
 
             // Pacing: TV smooth (jitter buffer in SurfaceFlinger), no frame-dropping helpers
-            putStringIfAbsent(sp, e, "frame_pacing", "tv");
+            putStringIfAbsent(sp, e, "frame_pacing", "tvgame");
             putBooleanIfAbsent(sp, e, "checkbox_async_prefer_lower_delays", false);
             putBooleanIfAbsent(sp, e, "checkbox_sync_lfr", false);
             putBooleanIfAbsent(sp, e, "checkbox_immediate_frame_delivery", false);
