@@ -207,9 +207,11 @@ final class TvFramePacer {
 
         // Hard cap on the latency the buffer may add
         boolean capped = false;
-        final long maxLead = haveGrid
+        // Game mode with more frames than refreshes (e.g. 90 fps on 60 Hz): no buffer at all.
+        // Every frame goes to the earliest refresh it can make and the newest one wins there.
+        final long maxLead = (game && streamFasterThanDisplay) ? 0L : (haveGrid
                 ? Math.max(1L, Math.round(maxLeadFrames * frame / (double) refresh)) * refresh
-                : (long) (maxLeadFrames * frame);
+                : (long) (maxLeadFrames * frame));
         if (lead > maxLead) {
             slot = earliest + maxLead;
             // Replace at most the previous frame, never frames queued before it
