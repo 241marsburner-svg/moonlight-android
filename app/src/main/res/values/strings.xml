@@ -380,8 +380,12 @@
     <string name="audio_buffer_large">TV large (for very bad Wi-Fi)</string>
     <string name="audio_buffer_off">Off: sound stays on the PC (headset on the PC)</string>
     <string name="audio_buffer_low_lag">TV low lag (max 60 ms, may crackle on Wi-Fi hiccups)</string>
-    <string name="title_mtk_full_speed_hints">MediaTek full-speed decoder hints</string>
-    <string name="summary_mtk_full_speed_hints">Always ask MediaTek decoders to run at full clock speed and in low-latency mode, even when they report Android\'s standard low-latency support. Skips the experimental queue-depth limits.</string>
+    <string name="title_mtk_full_speed_hints">MediaTek low-latency decoder setup</string>
+    <string name="summary_mtk_full_speed_hints">Configure MediaTek decoders with the low-latency options they really accept (always on in the TV build).</string>
+    <string name="title_mtk_extra_decoder_keys">MediaTek extra decoder keys (experimental)</string>
+    <string name="summary_mtk_extra_decoder_keys">Also send MediaTek\'s vendor speed keys and an operating rate. Off uses the set measured as fastest on TCL TVs with this chip; turn on only to compare the decode time in the stream report.</string>
+    <string name="title_tv_stream_report">Stream report after each stream</string>
+    <string name="summary_tv_stream_report">After a stream, show what reached the screen, network pauses, decoder and audio figures. Measured with nothing drawn over the video, unlike the performance overlay.</string>
     <string name="pacing_group_latency">Latency</string>
     <string name="pacing_group_vsync">Vsync</string>
     <string name="pacing_group_quality">Quality</string>

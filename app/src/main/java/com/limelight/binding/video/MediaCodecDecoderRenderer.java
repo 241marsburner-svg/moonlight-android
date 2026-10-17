@@ -206,6 +206,9 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     // ==== End Nano Pacer  ====
 
     // ==== Artemide TV ====
+    // Android performance hints (Android 12+) for the video threads, see TvPerformanceHints
+    private volatile com.limelight.tv.TvPerformanceHints perfHints;
+    private volatile boolean perfHintsSubmitThreadAdded;
     // "TV smooth" pacing: evenly spaced presentation times, buffer lives in SurfaceFlinger
     private final TvFramePacer tvPacer = new TvFramePacer();
     // Counts frames the display really showed (MediaCodec frame-rendered callbacks)
@@ -681,6 +684,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         TvDiagnostics.resetVideo();
         tvPacer.setStreamFps((prefs != null && prefs.fps > 0) ? prefs.fps : 60f);
         MediaCodecHelper.setMtkFullSpeedHints(prefs != null && prefs.mtkFullSpeedHints);
+        MediaCodecHelper.setMtkExtraKeys(prefs != null && prefs.mtkExtraDecoderKeys);
 
         this.activeWindowVideoStats = new VideoStats();
         this.lastWindowVideoStats = new VideoStats();
@@ -1752,6 +1756,10 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             public void run() {
                 rendererTid = Process.myTid();
                 applyVideoThreadPriorities();
+                final com.limelight.tv.TvPerformanceHints hints = perfHints;
+                if (hints != null) {
+                    hints.addThread(rendererTid);
+                }
                 BufferInfo info = new BufferInfo();
                 final android.media.MediaCodec.BufferInfo lfrInfo =
                         new android.media.MediaCodec.BufferInfo();
@@ -2198,6 +2206,15 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         }
 
 
+        // Artemide TV: performance hints for the video threads (renderer, decoder callbacks,
+        // and with direct submit the network receive thread that feeds the decoder)
+        if (BuildConfig.TV_BUILD && Build.VERSION.SDK_INT >= 31 && perfHints == null) {
+            perfHints = com.limelight.tv.TvPerformanceHints.create(context,
+                    (prefs != null && prefs.fps > 0) ? prefs.fps : 60f);
+            perfHintsSubmitThreadAdded = false;
+            addAsyncCallbackThreadToPerfHints();
+        }
+
         // Ensure initial frame pacing reflects settings (overlay-first, UI fallback)
         initFramePacingFromSettings();
         startRendererThread();
@@ -2271,6 +2288,11 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         }
 
         // Artemide TV: the frame-rendered callback and vsync threads are no longer needed
+        final com.limelight.tv.TvPerformanceHints hints = perfHints;
+        perfHints = null;
+        if (hints != null) {
+            hints.close();
+        }
         stopFrameRenderedThread();
         tvPacer.stopVsyncClock();
         tvPacer.reset();
@@ -2788,6 +2810,15 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     public int submitDecodeUnit(byte[] decodeUnitData, int decodeUnitLength, int decodeUnitType,
                                 int frameNumber, int frameType, char frameHostProcessingLatency,
                                 long receiveTimeMs, long enqueueTimeMs) {
+        // Artemide TV: with direct submit this is the network receive thread; hint it too
+        if (!perfHintsSubmitThreadAdded) {
+            final com.limelight.tv.TvPerformanceHints hints = perfHints;
+            if (hints != null) {
+                hints.addThread(Process.myTid());
+                perfHintsSubmitThreadAdded = true;
+            }
+        }
+
         if (stopping) {
             // Don't bother if we're stopping
             return MoonBridge.DR_OK;
@@ -3655,6 +3686,21 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
         // Keep OS priorities coherent after (re)attaching async callback.
         applyVideoThreadPriorities();
+        addAsyncCallbackThreadToPerfHints();
+    }
+
+    private void addAsyncCallbackThreadToPerfHints() {
+        final com.limelight.tv.TvPerformanceHints hints = perfHints;
+        if (hints == null) {
+            return;
+        }
+        try {
+            final android.os.HandlerThread cb = asyncCodec.getCallbackThread();
+            if (cb != null && cb.isAlive()) {
+                cb.getLooper(); // the thread id is only known once its looper runs
+                hints.addThread(cb.getThreadId());
+            }
+        } catch (Throwable ignored) { }
     }
 
     private void detachAsyncCodec() {
@@ -3683,6 +3729,11 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     // Helper method for buffer release based on mode
     private void releaseBufferAccordingToMode(int bufferIndex, long presentationTimeUs) {
         TvDiagnostics.onFrameReleased();
+        final com.limelight.tv.TvPerformanceHints hints = perfHints;
+        if (hints != null && presentationTimeUs > 0) {
+            // The PTS is the frame's arrival time (common-c clock = System.nanoTime's clock)
+            hints.reportWorkNanos(System.nanoTime() - presentationTimeUs * 1000L);
+        }
 
         if (PreferenceConfiguration.isTvPacing(prefs.framePacing)) {
             tvPacer.setGameMode(prefs.framePacing == PreferenceConfiguration.FRAME_PACING_TV_GAME);

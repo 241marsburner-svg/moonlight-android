@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Artemide TV build only: texts that differ from the phone builds -->
+<resources>
+    <string name="summary_enable_perf_overlay">For diagnosis only. On TCL TVs anything drawn over the video takes the compositor off its fast path and costs about 25 ms per frame (measured by moonlight-tcl on the same chip), so the overlay itself adds delay and stutter. The stream report after each stream shows the same figures without that cost.</string>
+</resources>

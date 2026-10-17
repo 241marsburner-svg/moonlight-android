@@ -17,7 +17,7 @@ import com.limelight.LimeLog;
  */
 public final class TvDefaults {
     // Bump when new defaults are added; only keys that are still unset get written.
-    private static final int DEFAULTS_VERSION = 2;
+    private static final int DEFAULTS_VERSION = 3;
     private static final String DEFAULTS_VERSION_KEY = "artemide_tv_defaults_version";
 
     private TvDefaults() {}
@@ -42,6 +42,14 @@ public final class TvDefaults {
                 e.putString("frame_pacing", "tvgame");
             }
             putBooleanIfAbsent(sp, e, "checkbox_tv_game_mode", true);
+
+            // v3 (findings from moonlight-tcl, measured on a TCL C8K with the same chip): anything
+            // drawn over the video costs the compositor about 25 ms per frame, so the overlay that
+            // v1 turned on for testing goes off; the stream report after each stream replaces it.
+            if (applied >= 1) {
+                e.putBoolean("checkbox_enable_perf_overlay", false);
+            }
+            putBooleanIfAbsent(sp, e, "checkbox_tv_stream_report", true);
 
             // Stream: 1440p60 HEVC (the app's own default bitrate for this is 40 Mbps)
             putStringIfAbsent(sp, e, "list_resolution", "2560x1440");
@@ -77,9 +85,10 @@ public final class TvDefaults {
             putBooleanIfAbsent(sp, e, "checkbox_mtk_full_speed_hints", true);
             putStringIfAbsent(sp, e, "list_audio_buffer_mode", "normal");
 
-            // Stats on for the first test sessions (toggle in-stream: menu > Advanced > Toggle Performance Overlay)
-            putBooleanIfAbsent(sp, e, "checkbox_enable_perf_overlay", true);
+            // Nothing over the video while playing (see v3 above); figures come in the stream report
+            putBooleanIfAbsent(sp, e, "checkbox_enable_perf_overlay", false);
             putBooleanIfAbsent(sp, e, "checkbox_enable_perf_overlay_lite", false);
+            putBooleanIfAbsent(sp, e, "checkbox_tv_compositor_workaround", false);
 
             e.putInt(DEFAULTS_VERSION_KEY, DEFAULTS_VERSION);
             e.apply();

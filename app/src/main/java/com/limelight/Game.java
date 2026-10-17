@@ -2047,6 +2047,21 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 }
             }
 
+            // Artemide TV: save the stream report; the next app screen shows it
+            if (BuildConfig.TV_BUILD && prefConfig.tvStreamReport) {
+                try {
+                    final String stream = prefConfig.width + "x" + prefConfig.height + " " +
+                            Math.round(prefConfig.fps) + " fps" + selectedVideoFormat + " " +
+                            (prefConfig.bitrate / 1000) + " Mbps";
+                    com.limelight.tv.TvStreamReport.save(this,
+                            com.limelight.binding.video.TvDiagnostics.buildSessionReport(this, prefConfig,
+                                    stream, averageDecoderLat > 0 ? averageDecoderLat : -1,
+                                    prefConfig.enablePerfOverlay));
+                } catch (Throwable t) {
+                    LimeLog.warning("Artemide TV: stream report failed: " + t);
+                }
+            }
+
             // Clear the tombstone count if we terminated normally
             if (!reportedCrash && tombstonePrefs.getInt("CrashCount", 0) != 0) {
                 tombstonePrefs.edit()

@@ -69,6 +69,15 @@ public class PreferenceConfiguration {
     private static final boolean DEFAULT_MTK_FULL_SPEED_HINTS = false;
     public boolean mtkFullSpeedHints = DEFAULT_MTK_FULL_SPEED_HINTS;
 
+    // MediaTek: first try the vendor keys and an operating rate (experimental; the measured set
+    // without them is used otherwise)
+    public static final String MTK_EXTRA_DECODER_KEYS_PREF_STRING = "checkbox_mtk_extra_decoder_keys";
+    public boolean mtkExtraDecoderKeys = false;
+
+    // Artemide TV: show a stream report after each stream (measured with nothing over the video)
+    public static final String TV_STREAM_REPORT_PREF_STRING = "checkbox_tv_stream_report";
+    public boolean tvStreamReport = false;
+
     // Wait patiently for a free decoder input buffer instead of dropping the frame and
     // requesting a keyframe after ~5 ms. Always on in the TV build.
     public boolean patientDecoderInput = false;
@@ -1243,7 +1252,11 @@ public class PreferenceConfiguration {
         if (config.audioBufferMode == null) {
             config.audioBufferMode = DEFAULT_AUDIO_BUFFER_MODE;
         }
-        config.mtkFullSpeedHints = prefs.getBoolean(MTK_FULL_SPEED_HINTS_PREF_STRING, DEFAULT_MTK_FULL_SPEED_HINTS);
+        // The TV build always uses its own MediaTek ladder (the stock presets fail on c2.mtk)
+        config.mtkFullSpeedHints = com.limelight.BuildConfig.TV_BUILD ||
+                prefs.getBoolean(MTK_FULL_SPEED_HINTS_PREF_STRING, DEFAULT_MTK_FULL_SPEED_HINTS);
+        config.mtkExtraDecoderKeys = prefs.getBoolean(MTK_EXTRA_DECODER_KEYS_PREF_STRING, false);
+        config.tvStreamReport = prefs.getBoolean(TV_STREAM_REPORT_PREF_STRING, com.limelight.BuildConfig.TV_BUILD);
         config.patientDecoderInput = com.limelight.BuildConfig.TV_BUILD;
         config.tvGameMode = prefs.getBoolean(TV_GAME_MODE_PREF_STRING, com.limelight.BuildConfig.TV_BUILD);
         config.tvAggressiveTiming = prefs.getBoolean(TV_AGGRESSIVE_TIMING_PREF_STRING, false);

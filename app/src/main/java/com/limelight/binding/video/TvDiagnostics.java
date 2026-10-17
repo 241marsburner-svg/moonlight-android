@@ -80,7 +80,22 @@ public final class TvDiagnostics {
     private static long snapPresentSamples, snapPresentOffsetSum, snapPresentSlips;
     private static int snapUnderruns;
 
+    // --- Session (for the stream report) ---
+    private static volatile long sessionStartNs;
+    private static long gcCountAtStart = -1, gcTimeAtStart, blockingGcCountAtStart, blockingGcTimeAtStart;
+    private static volatile String adpfState = "off";
+
+    public static void setAdpfState(String state) {
+        adpfState = (state != null) ? state : "?";
+    }
+
     public static void resetVideo() {
+        sessionStartNs = System.nanoTime();
+        gcCountAtStart = gcStat("art.gc.gc-count");
+        gcTimeAtStart = gcStat("art.gc.gc-time");
+        blockingGcCountAtStart = gcStat("art.gc.blocking-gc-count");
+        blockingGcTimeAtStart = gcStat("art.gc.blocking-gc-time");
+        adpfState = "off";
         framesReleased.set(0);
         framesDisplayed.set(0);
         displayGaps.set(0);
@@ -555,7 +570,7 @@ public final class TvDiagnostics {
         }
 
         sb.append("Decoder: low-latency ").append(decoderLowLatencyFeature)
-                .append(" · MTK full-speed ").append(mtkFullSpeedHintsApplied ? "on" : "off")
+                .append(" · MTK setup ").append(mtkFullSpeedHintsApplied ? "TV ladder" : "stock")
                 .append(" · preset ").append(decoderConfigTry).append(" (").append(decoderPreset).append(')')
                 .append(String.format(Locale.US, " · input waits %d (max %d ms) · keyframe req %d\n",
                         waits, maxInputWaitNs / 1_000_000L, keyframes));
@@ -572,6 +587,93 @@ public final class TvDiagnostics {
             sb.append(" · cushion now ").append(audioTargetMs).append(" ms");
         }
 
+        return sb.toString();
+    }
+
+    /**
+     * The stream report shown after a stream (TV build): session totals, measured while nothing
+     * needed to be drawn over the video (unlike the overlay, which costs the TV's compositor
+     * about 25 ms per frame on TCL TVs).
+     *
+     * @param stream     e.g. "2560x1440 60 fps HEVC 50 Mbps"
+     * @param decodeMs   average decoder latency of the session, ms (-1 = unknown)
+     * @param overlayOn  whether the performance overlay was visible during the stream
+     */
+    public static String buildSessionReport(Context context, PreferenceConfiguration prefs,
+                                            String stream, int decodeMs, boolean overlayOn) {
+        final long now = System.nanoTime();
+        final double secs = Math.max(1.0, (now - sessionStartNs) / 1e9);
+        final long mins = (long) (secs / 60), remSecs = (long) (secs % 60);
+
+        final long released = framesReleased.get();
+        final long displayed = framesDisplayed.get();
+        final long leadN = leadSamples.get();
+        final double avgLeadMs = leadN > 0 ? (leadSumNs.get() / (double) leadN) / 1e6 : 0;
+        final long arrivals = videoArrivals.get();
+        final double bunchedPct = arrivals > 0 ? 100.0 * videoBunched.get() / arrivals : 0;
+        final long netGaps = videoNetGaps.get();
+        final long inN = inAppSamples.get();
+        final double inAvg = inN > 0 ? inAppSumMs.get() / (double) inN : 0;
+
+        final StringBuilder sb = new StringBuilder(900);
+        sb.append(String.format(Locale.US, "%s · %d min %02d s · %s%s\n",
+                stream != null ? stream : "?", mins, remSecs, describePacing(prefs),
+                overlayOn ? " · overlay was ON (adds delay)" : ""));
+
+        // What reached the screen
+        if (displayed > 0) {
+            sb.append(String.format(Locale.US, "Screen: %,d of %,d frames shown · %d hitches (longest %d ms) · display drops %d\n",
+                    displayed, released, displayGaps.get(), maxDisplayIntervalNs / 1_000_000L, unplannedDrops.get()));
+        } else {
+            sb.append(String.format(Locale.US, "Screen: %,d frames sent to the display\n", released));
+        }
+
+        // Network arrival
+        sb.append(String.format(Locale.US, "Network: %d pauses (%.1f/min, longest %d ms%s) · %.0f%% of frames bunched · audio pauses %d (longest %d ms)\n",
+                netGaps, netGaps * 60.0 / secs, maxVideoNetGapMs,
+                gapPeriodEmaMs > 0 ? String.format(Locale.US, ", about every %d ms", gapPeriodEmaMs) : "",
+                bunchedPct, audioArrivalGaps.get(), maxAudioArrivalGapMs));
+
+        // Delay contributions
+        sb.append(String.format(Locale.US, "Delay: decode %s · jitter buffer +%.1f ms (max %d ms, late %d, trims %d, replaced %d) · in app %.1f ms (max %d)\n",
+                decodeMs >= 0 ? decodeMs + " ms" : "?", avgLeadMs, maxLeadNs / 1_000_000L,
+                pacerLate.get(), pacerTrims.get(), pacerCapped.get(), inAvg, maxInAppMs));
+
+        // Decoder
+        sb.append("Decoder: ").append(decoderPreset.isEmpty() ? ("preset " + decoderConfigTry) : decoderPreset)
+                .append(String.format(Locale.US, " · input waits %d (max %d ms) · keyframe requests %d · hand-off max %d ms (slow %d)\n",
+                        inputWaits.get(), maxInputWaitNs / 1_000_000L, keyframeRequests.get(),
+                        maxSubmitNs / 1_000_000L, slowSubmits.get()));
+
+        // Audio
+        sb.append("Audio: ").append(audioTrackMode);
+        if (!audioTrackMode.startsWith("off")) {
+            sb.append(' ').append(audioBufferMs).append(" ms");
+            if (audioTargetMs >= 0) {
+                sb.append(" (grew to ").append(audioTargetMs).append(" ms)");
+            }
+            sb.append(" · underruns ").append(audioUnderruns)
+                    .append(" · refilled ").append(audioReprimes.get())
+                    .append(" · trimmed ").append(audioTrimmed.get())
+                    .append(" · skipped ").append(audioSkipped.get());
+        }
+        sb.append('\n');
+
+        // App and system
+        final long gcCount = gcStat("art.gc.gc-count"), gcTime = gcStat("art.gc.gc-time");
+        final long bCount = gcStat("art.gc.blocking-gc-count"), bTime = gcStat("art.gc.blocking-gc-time");
+        String gc = "?";
+        if (gcCount >= 0 && gcCountAtStart >= 0) {
+            gc = String.format(Locale.US, "%d (%d ms), blocking %d (%d ms)",
+                    gcCount - gcCountAtStart, gcTime - gcTimeAtStart,
+                    bCount - blockingGcCountAtStart, bTime - blockingGcTimeAtStart);
+        }
+        sb.append("App: GC ").append(gc)
+                .append(" · boosted threads ").append(boostedThreads)
+                .append(" · CPU hints ").append(adpfState).append('\n');
+
+        sb.append(describeNetwork(context)).append(" · ").append(describeDisplay(context))
+                .append(" · Android ").append(Build.VERSION.RELEASE);
         return sb.toString();
     }
 

@@ -1,0 +1,28 @@
+From 788bc340fa1afe7a38aa77befe575ad6c265a380 Mon Sep 17 00:00:00 2001
+From: Cameron Gutman <aicommander@gmail.com>
+Date: Tue, 8 Sep 2026 23:12:41 -0500
+Subject: [PATCH 3/3] Don't speculatively report losses if RFI is disabled
+
+Not only does it unnecessarily cause guaranteed loss of the target frame, it can lead to 120 consecutive frames dropped if we fully receive that frame since we've already triggered an IDR frame wait but didn't tell the depacketizer to request an IDR frame.
+
+Closes #147
+---
+ src/RtpVideoQueue.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/RtpVideoQueue.c b/src/RtpVideoQueue.c
+index 0f4ac61..f393dee 100644
+--- a/src/RtpVideoQueue.c
++++ b/src/RtpVideoQueue.c
+@@ -210,7 +210,7 @@ static int reconstructFrame(PRTP_VIDEO_QUEUE queue) {
+         // based on the packets we've received (or not) so far. If the number of missing shards exceeds the total
+         // needed shards, there is no hope of recovering the data. The only way we could recover this frame is by
+         // receiving OOS data, which is unlikely because we've not seen any recently from this host.
+-        if (!queue->reportedLostFrame && !queue->receivedOosData) {
++        if (isReferenceFrameInvalidationEnabled() && !queue->reportedLostFrame && !queue->receivedOosData) {
+             // NB: We use totalPackets - neededPackets instead of just bufferParityPackets here because we require
+             // one extra parity shard for recovery if we're in FEC validation mode.
+             if (queue->missingPackets > totalPackets - neededPackets) {
+-- 
+2.43.0
+

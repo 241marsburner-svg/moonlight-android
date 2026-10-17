@@ -374,6 +374,9 @@ public class PcView extends AppCompatActivity implements AdapterFragmentCallback
         // Display a decoder crash notification if we've returned after a crash
         UiHelper.showDecoderCrashDialog(this);
 
+        // Artemide TV: the report of the stream that just ended
+        com.limelight.tv.TvStreamReport.showIfPending(this);
+
         refreshProfileButton();
 
         inForeground = true;

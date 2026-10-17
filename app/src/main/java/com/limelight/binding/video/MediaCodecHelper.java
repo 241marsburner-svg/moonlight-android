@@ -558,37 +558,51 @@ public class MediaCodecHelper {
         return lastPresetDescription;
     }
 
+    // Artemide TV: also try MediaTek's vendor keys and an operating rate first (experimental)
+    private static volatile boolean mtkExtraKeys = false;
+
+    public static void setMtkExtraKeys(boolean enabled) {
+        mtkExtraKeys = enabled;
+    }
+
     /**
-     * Artemide TV ladder for MediaTek decoders. On the TCL C7K every stock MTK preset was
-     * rejected (the overlay showed preset 4, i.e. no low-latency option at all); the key they
-     * all share is KEY_OPERATING_RATE = Short.MAX_VALUE. Here each try drops the riskiest
-     * remaining keys first, and Android's KEY_LOW_LATENCY stays until the last try.
+     * Artemide TV ladder for MediaTek decoders, based on what moonlight-tcl measured on a TCL C8K
+     * (same T653T01 / Pentonic 700 platform as the C7K): KEY_LOW_LATENCY + vdec-lowlatency +
+     * realtime priority is what works. KEY_OPERATING_RATE = 32767 makes c2.mtk refuse to start (the
+     * stock presets all failed on that and ran with no low-latency option at all), and MediaTek's
+     * Codec2 low-latency/game-mode vendor keys cost a full extra frame on screen there.
+     *
+     * step 0 (only with the experimental extras): vendor keys + operating rate 2x fps + step 1
+     * step 1: low-latency + vdec-lowlatency + priority 0   (the measured set)
+     * step 2: low-latency + priority 0
+     * step 3: low-latency
+     * then a plain format.
      */
     private static boolean setMtkTvLowLatencyOptions(MediaFormat f, boolean ultraLowLatency, int tryNumber) {
-        if (tryNumber > 4) {
+        final int step = mtkExtraKeys ? tryNumber : tryNumber + 1;
+        if (step > 3) {
             lastPresetDescription = "plain (no low-latency options accepted)";
             return false;
         }
 
-        int frameRate = 60;
-        try {
-            if (f.containsKey(MediaFormat.KEY_FRAME_RATE)) {
-                frameRate = f.getInteger(MediaFormat.KEY_FRAME_RATE);
-            }
-        } catch (Throwable ignored) { }
-        final int operatingRate = Math.min(240, Math.max(60, frameRate) * 2);
-
         safeSet(f, MediaFormat.KEY_LOW_LATENCY, 1);
-        if (tryNumber <= 3) {
-            safeSet(f, "vdec-lowlatency", 1);
-        }
-        if (tryNumber <= 2) {
+        if (step <= 2) {
             safeSet(f, MediaFormat.KEY_PRIORITY, 0);
         }
-        if (tryNumber <= 1) {
+        if (step <= 1) {
+            // Legacy MediaTek ACodec key; Codec2 decoders ignore it
+            safeSet(f, "vdec-lowlatency", 1);
+        }
+        if (step == 0) {
+            int frameRate = 60;
+            try {
+                if (f.containsKey(MediaFormat.KEY_FRAME_RATE)) {
+                    frameRate = f.getInteger(MediaFormat.KEY_FRAME_RATE);
+                }
+            } catch (Throwable ignored) { }
+            safeSet(f, MediaFormat.KEY_OPERATING_RATE, Math.min(240, Math.max(60, frameRate) * 2));
             safeSet(f, "vendor.mtk.vdec.low-latency.mode", 1);
             safeSet(f, "vendor.mtk.vdec.disable-idle", 1);
-            safeSet(f, "vendor.mtk.vdec.vsync.adjust.enable", 0);
             safeSet(f, "vendor.mtk.vdec.cpu.boost.mode", 1);
             safeSet(f, "vendor.mtk.vdec.cpu.boost.mode.value", 1);
             safeSet(f, "vendor.mtk.vdec.dvfs.mode", 1);
@@ -597,16 +611,12 @@ public class MediaCodecHelper {
                 safeSet(f, "vendor.mtk.vdec.ultra-low-latency", 1);
             }
         }
-        if (tryNumber == 0) {
-            safeSet(f, MediaFormat.KEY_OPERATING_RATE, operatingRate);
-        }
 
-        switch (tryNumber) {
-            case 0: lastPresetDescription = "MTK full: low-latency + vendor boost + rate " + operatingRate; break;
-            case 1: lastPresetDescription = "MTK: low-latency + vendor boost"; break;
-            case 2: lastPresetDescription = "low-latency + realtime priority"; break;
-            case 3: lastPresetDescription = "low-latency (Android + MTK)"; break;
-            default: lastPresetDescription = "low-latency (Android only)"; break;
+        switch (step) {
+            case 0: lastPresetDescription = "MTK extras: vendor keys + rate + low-latency + priority"; break;
+            case 1: lastPresetDescription = "low-latency + priority (measured on the C8K)"; break;
+            case 2: lastPresetDescription = "low-latency + priority"; break;
+            default: lastPresetDescription = "low-latency only"; break;
         }
         LimeLog.info("Artemide TV decoder try " + tryNumber + ": " + lastPresetDescription);
         return true;
