@@ -40,7 +40,15 @@ final class TvFramePacer {
     private static final long ADAPT_COOLDOWN_NS = 300_000_000L;
 
     // TV game mode: at most one frame of buffer, trimmed quickly, no extra pipeline margin
-    private static final float GAME_MAX_LEAD_FRAMES = 1.0f;
+    // Game mode buffer limit adapts between these: it grows by a frame when frames keep having
+    // to replace each other (Wi-Fi bunches bigger than the buffer), and shrinks after a calm spell
+    private static final int GAME_MIN_LEAD_FRAMES = 1;
+    private static final int GAME_MAX_LEAD_FRAMES = 3;
+    private static final long GAME_GROW_IF_CAPPED_WITHIN_NS = 2_000_000_000L;
+    private static final long GAME_SHRINK_AFTER_NS = 20_000_000_000L;
+    private int gameLeadFrames = GAME_MIN_LEAD_FRAMES;
+    private long lastCapNs;
+    private long lastLeadChangeNs;
     private static final long GAME_TRIM_WINDOW_NS = 1_000_000_000L;
 
     private volatile boolean gameMode;
@@ -128,16 +136,26 @@ final class TvFramePacer {
     synchronized long scheduleNextFrame(final long nowNs, final long ptsUs) {
         final long frame = framePeriodNs;
         final boolean game = gameMode;
-        final float maxLeadFrames = game ? GAME_MAX_LEAD_FRAMES : MAX_LEAD_FRAMES;
-        final long trimWindowNs = game ? GAME_TRIM_WINDOW_NS : TRIM_WINDOW_NS;
-        final long trimCooldownNs = game ? GAME_TRIM_WINDOW_NS : TRIM_COOLDOWN_NS;
-        // Smooth mode keeps one spare frame; game mode keeps none
-        final long keepSpareNs = game ? 0L : frame;
         final boolean haveGrid = vsyncClock.snapshot(nowNs, grid);
         final long refresh = haveGrid ? grid[1] : frame;
         final boolean presentationGrid = haveGrid && grid[3] != 0L;
         final long gridRef = grid[0];
         lastPeriodNs = refresh;
+
+        // Frames faster than the display (e.g. 90 fps on 60 Hz) always replace each other;
+        // that says nothing about the network, so don't grow the buffer for it
+        final boolean streamFasterThanDisplay = frame < (refresh * 9) / 10;
+        if (game && !streamFasterThanDisplay && gameLeadFrames > GAME_MIN_LEAD_FRAMES &&
+                nowNs - Math.max(lastCapNs, lastLeadChangeNs) >= GAME_SHRINK_AFTER_NS) {
+            gameLeadFrames--;
+            lastLeadChangeNs = nowNs;
+        }
+        final float maxLeadFrames = game ? (streamFasterThanDisplay ? GAME_MIN_LEAD_FRAMES : gameLeadFrames)
+                : MAX_LEAD_FRAMES;
+        final long trimWindowNs = game ? GAME_TRIM_WINDOW_NS : TRIM_WINDOW_NS;
+        final long trimCooldownNs = game ? GAME_TRIM_WINDOW_NS : TRIM_COOLDOWN_NS;
+        // Smooth mode keeps one spare frame; game mode keeps none
+        final long keepSpareNs = game ? 0L : frame;
 
         // SurfaceFlinger takes a buffer for a refresh at (refresh time - pipeline)
         final long basePipeline = (presentationGrid && grid[2] > 0L)
@@ -185,6 +203,15 @@ final class TvFramePacer {
             ideal = slot;
             lead = slot - earliest;
             capped = true;
+
+            if (game && !streamFasterThanDisplay) {
+                if (lastCapNs != 0L && nowNs - lastCapNs < GAME_GROW_IF_CAPPED_WITHIN_NS &&
+                        gameLeadFrames < GAME_MAX_LEAD_FRAMES) {
+                    gameLeadFrames++;
+                    lastLeadChangeNs = nowNs;
+                }
+                lastCapNs = nowNs;
+            }
         }
 
         // Trim buffer that has gone unused for a whole window, keeping one spare frame
@@ -239,6 +266,7 @@ final class TvFramePacer {
 
         TvDiagnostics.onFrameScheduled(lead, late, trimmed, capped);
         TvDiagnostics.setVsyncInfo(haveGrid ? refresh : 0L, presentationGrid, pipeline);
+        TvDiagnostics.setBufferLimitFrames(game ? (int) maxLeadFrames : (int) MAX_LEAD_FRAMES);
 
         // Mid-way between the previous refresh and the planned one
         return haveGrid ? slot - refresh / 2 : slot;

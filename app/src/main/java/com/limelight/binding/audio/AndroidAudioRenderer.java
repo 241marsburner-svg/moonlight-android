@@ -42,8 +42,18 @@ private static void bumpAudioPriority() {
     // code skip audio); instead the queued amount is measured and steered:
     //  - stays above target + TV_TRIM_SLACK_MS for a whole second -> drop one packet (latency)
     //  - stays under a quarter of the target -> refill with a little silence (cushion lost)
-    private static final int TV_CAPACITY_MS = 250;
-    private static final int TV_HEADROOM_MS = 60;
+    // The target itself adapts: every time the cushion nearly runs dry (Wi-Fi delivered audio
+    // in a bigger bunch than it could cover) it grows by TV_GROW_MS, up to TV_MAX_TARGET_MS,
+    // and it shrinks again slowly once the network has been calm for a while.
+    private static final int TV_CAPACITY_MS = 400;
+    private static final int TV_HEADROOM_MS = 160;
+    private static final int TV_MAX_TARGET_MS = 150;
+    private static final int TV_GROW_MS = 10;
+    private static final int TV_SHRINK_MS = 5;
+    private static final long TV_GROW_COOLDOWN_MS = 400;
+    private static final long TV_SHRINK_AFTER_MS = 30_000;
+    // "Nearly dry": less than this much audio left in the track
+    private static final int TV_DRY_MS = 4;
     private static final int TV_TRIM_SLACK_MS = 15;
     private static final long TV_REFILL_AFTER_MS = 150;
     private static final long TV_TRIM_SPACING_MS = 250;
@@ -52,6 +62,10 @@ private static void bumpAudioPriority() {
     private int tvChannelCount;
     private int tvSampleRate;
     private int tvTargetFrames;
+    private int tvBaseTargetFrames;
+    private long tvLastGrowMs;
+    private long tvLastDryMs;
+    private long tvLastShrinkMs;
     private long tvFramesWritten;
     private long tvLowSinceMs;
     private boolean tvCushionBuilt;
@@ -183,7 +197,10 @@ private static void bumpAudioPriority() {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                         // Room for the cushion plus bursts; non-blocking writes stop at this size
                         int capacityFrames = track.getBufferCapacityInFrames();
-                        int want = cushionFrames + (int) ((long) sampleRate * TV_HEADROOM_MS / 1000);
+                        // (Before Android 12 playback only starts once this is full, so keep it small there.)
+                        int want = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+                                ? (int) ((long) sampleRate * (TV_MAX_TARGET_MS + TV_HEADROOM_MS) / 1000)
+                                : cushionFrames + (int) ((long) sampleRate * 60 / 1000);
                         if (capacityFrames > 0) {
                             want = Math.min(want, capacityFrames);
                         }
@@ -202,6 +219,10 @@ private static void bumpAudioPriority() {
                     tvChannelCount = audioConfiguration.channelCount;
                     tvSampleRate = sampleRate;
                     tvTargetFrames = cushionFrames;
+                    tvBaseTargetFrames = cushionFrames;
+                    tvLastGrowMs = 0;
+                    tvLastDryMs = 0;
+                    tvLastShrinkMs = 0;
                     tvFramesWritten = 0;
                     tvLowSinceMs = 0;
                     tvCushionBuilt = false;
@@ -364,6 +385,21 @@ private static void bumpAudioPriority() {
             TvDiagnostics.setAudioLevel((int) (queued * 1000 / tvSampleRate),
                     tvLastWindowMinFrames < 0 ? -1 : (int) (tvLastWindowMinFrames * 1000 / tvSampleRate));
         }
+
+        // Adapt the cushion to how bunchy the network is
+        if (tvCushionBuilt && playing && queued * 1000 < (long) TV_DRY_MS * tvSampleRate) {
+            tvLastDryMs = nowMs;
+            final int maxTarget = (int) ((long) tvSampleRate * TV_MAX_TARGET_MS / 1000);
+            if (tvTargetFrames < maxTarget && nowMs - tvLastGrowMs >= TV_GROW_COOLDOWN_MS) {
+                tvTargetFrames = Math.min(maxTarget, tvTargetFrames + tvSampleRate * TV_GROW_MS / 1000);
+                tvLastGrowMs = nowMs;
+            }
+        } else if (tvTargetFrames > tvBaseTargetFrames &&
+                nowMs - Math.max(tvLastDryMs, tvLastShrinkMs) >= TV_SHRINK_AFTER_MS) {
+            tvTargetFrames = Math.max(tvBaseTargetFrames, tvTargetFrames - tvSampleRate * TV_SHRINK_MS / 1000);
+            tvLastShrinkMs = nowMs;
+        }
+        TvDiagnostics.setAudioTarget((int) ((long) tvTargetFrames * 1000 / tvSampleRate));
 
         if (queued >= tvTargetFrames / 2) {
             tvCushionBuilt = true;

@@ -44,6 +44,7 @@ public final class TvDiagnostics {
     private static volatile long vsyncPeriodNs;          // 0 = no grid (plain spacing)
     private static volatile boolean vsyncPresentationGrid;
     private static volatile long assumedPipelineNs;
+    private static volatile int bufferLimitFrames;
     private static final AtomicLong presentSamples = new AtomicLong();
     private static final AtomicLong presentOffsetSumNs = new AtomicLong();
     private static final AtomicLong presentSlips = new AtomicLong();
@@ -69,6 +70,7 @@ public final class TvDiagnostics {
     private static final AtomicLong audioReprimes = new AtomicLong();
     private static final AtomicLong audioTrimmed = new AtomicLong();
     private static volatile int audioLevelMs = -1;
+    private static volatile int audioTargetMs = -1;
     private static volatile int audioMinLevelMs = -1;
 
     // --- Overlay rate computation (UI thread only) ---
@@ -184,6 +186,10 @@ public final class TvDiagnostics {
         }
     }
 
+    static void setBufferLimitFrames(int frames) {
+        bufferLimitFrames = frames;
+    }
+
     static void setVsyncInfo(long periodNs, boolean presentationGrid, long pipelineNs) {
         vsyncPeriodNs = periodNs;
         vsyncPresentationGrid = presentationGrid;
@@ -256,6 +262,7 @@ public final class TvDiagnostics {
         audioTrimmed.set(0);
         audioLevelMs = -1;
         audioMinLevelMs = -1;
+        audioTargetMs = -1;
         snapUnderruns = 0;
         snapSkipped = 0;
     }
@@ -271,6 +278,10 @@ public final class TvDiagnostics {
     }
 
     /** Audio queued in the track now, and the lowest level during the last second (ms). */
+    public static void setAudioTarget(int targetMs) {
+        audioTargetMs = targetMs;
+    }
+
     public static void setAudioLevel(int nowMs, int minMs) {
         audioLevelMs = nowMs;
         audioMinLevelMs = minMs;
@@ -354,8 +365,8 @@ public final class TvDiagnostics {
         }
 
         if (prefs != null && PreferenceConfiguration.isTvPacing(prefs.framePacing)) {
-            sb.append(String.format(Locale.US, "Jitter buffer +%.1f ms (max %d ms) · late %.1f/s · trims %d · capped %d\n",
-                    avgLeadMs, maxLeadNs / 1_000_000L, latePerSec, trims, pacerCapped.get()));
+            sb.append(String.format(Locale.US, "Jitter buffer +%.1f ms (max %d ms, limit %d frames) · late %.1f/s · trims %d · capped %d\n",
+                    avgLeadMs, maxLeadNs / 1_000_000L, bufferLimitFrames, latePerSec, trims, pacerCapped.get()));
 
             final long period = vsyncPeriodNs;
             if (period > 0) {
@@ -386,6 +397,9 @@ public final class TvDiagnostics {
                 .append(" · skipped ").append(skipped);
         if (audioLevelMs >= 0) {
             sb.append(" · queued ").append(audioLevelMs).append(" ms (low ").append(audioMinLevelMs).append(" ms)");
+        }
+        if (audioTargetMs >= 0) {
+            sb.append(" · cushion now ").append(audioTargetMs).append(" ms");
         }
 
         return sb.toString();

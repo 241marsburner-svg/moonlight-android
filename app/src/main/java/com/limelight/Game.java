@@ -441,7 +441,8 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
     private final Runnable backgroundPing = () -> {
         if (connected) {
-            timerHandler.postDelayed(Game.this.backgroundPing, 20);
+            // Artemide TV: twice as often, to keep the TV's Wi-Fi from dozing between frames
+            timerHandler.postDelayed(Game.this.backgroundPing, BuildConfig.TV_BUILD ? 10 : 20);
             MoonBridge.sendEmptyPayload();
         }
     };
