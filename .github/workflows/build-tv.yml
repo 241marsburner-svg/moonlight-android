@@ -54,7 +54,17 @@ jobs:
           echo "Android SDK: $SDK"
           echo "sdkmanager: $SDKMANAGER"
           (yes | "$SDKMANAGER" --sdk_root="$SDK" --licenses > /dev/null) || true
-          "$SDKMANAGER" --sdk_root="$SDK" --install "platforms;android-36" "ndk;27.0.12077973" > /dev/null
+          # Downloads from Google occasionally arrive broken ("Error on ZipFile"): retry
+          for attempt in 1 2 3 4; do
+            if "$SDKMANAGER" --sdk_root="$SDK" --install "platforms;android-36" "ndk;27.0.12077973" > /dev/null &&
+               [ -f "$SDK/ndk/27.0.12077973/source.properties" ]; then
+              break
+            fi
+            echo "sdkmanager attempt $attempt failed, retrying"
+            rm -rf "$SDK/ndk/27.0.12077973" "$SDK/.temp" "$HOME/.android/cache"
+            sleep $((attempt * 15))
+          done
+          [ -f "$SDK/ndk/27.0.12077973/source.properties" ]
           ls "$SDK/ndk"
           echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
