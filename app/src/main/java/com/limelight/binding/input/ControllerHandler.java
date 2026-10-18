@@ -374,6 +374,24 @@ if (this.prefConfig != null && this.prefConfig.snappyInput) {
         return (device.getSources() & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD;
     }
 
+    /**
+     * Artemide TV: a TV remote or similar (keys and a D-pad, but no sticks and no A button).
+     * Moonlight treats these as controllers, so their Back went to the PC as the gamepad's
+     * View/Select button.
+     */
+    public static boolean isTvRemoteLike(InputDevice device) {
+        if (device == null || hasJoystickAxes(device)) {
+            return false;
+        }
+        try {
+            final boolean[] has = device.hasKeys(KeyEvent.KEYCODE_BUTTON_A);
+            if (has != null && has.length > 0 && has[0]) {
+                return false;
+            }
+        } catch (Throwable ignored) { }
+        return device.getKeyboardType() != InputDevice.KEYBOARD_TYPE_ALPHABETIC;
+    }
+
     public static boolean isGameControllerDevice(InputDevice device) {
         if (device == null) {
             return true;

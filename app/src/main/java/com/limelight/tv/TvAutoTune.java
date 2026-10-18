@@ -52,6 +52,8 @@ public final class TvAutoTune {
     private TvAutoTune() {}
 
     public static final long WARMUP_MS = 10_000;
+    // The first test may have to launch the app on the PC (or create Apollo's display first)
+    public static final long FIRST_WARMUP_MS = 20_000;
     public static final long MEASURE_MS = 35_000;
     public static final long CONNECT_TIMEOUT_MS = 40_000;
     private static final String PREF_LAST_LOG = "artemide_tv_autotune_last_log";
@@ -165,6 +167,11 @@ public final class TvAutoTune {
         startedAt = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(new Date());
         buildPlan(PreferenceConfiguration.readPreferences(context));
         LimeLog.info("Artemide TV auto-tune: " + plan.size() + " tests");
+    }
+
+    /** Warm-up of the test that is running now. */
+    public static synchronized long currentWarmupMs() {
+        return index <= 0 ? FIRST_WARMUP_MS : WARMUP_MS;
     }
 
     public static synchronized int planSize() {
@@ -458,7 +465,8 @@ public final class TvAutoTune {
         b.append("Artemide TV auto-tune · ").append(startedAt).append(" · ").append(Build.MANUFACTURER).append(' ')
                 .append(Build.MODEL).append(" · Android ").append(Build.VERSION.RELEASE).append(" · app ")
                 .append(BuildConfig.VERSION_NAME).append(" (").append(BuildConfig.VERSION_CODE).append(")\n");
-        b.append(String.format(Locale.US, "Each test: %d s warm-up, %d s measured.\n\n", WARMUP_MS / 1000, MEASURE_MS / 1000));
+        b.append(String.format(Locale.US, "Each test: %d s warm-up (the first one %d s), %d s measured.\n\n",
+                WARMUP_MS / 1000, FIRST_WARMUP_MS / 1000, MEASURE_MS / 1000));
         b.append("RANKING\n").append(summaryText()).append('\n');
         b.append("SCORES (0-100, higher is better)\n");
         b.append(" Smoothness = 100 x shown/possible frames - 4 per hitch/min - 6 per frame loss/min - 2 per network pause/min\n");

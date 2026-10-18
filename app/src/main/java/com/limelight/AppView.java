@@ -79,6 +79,8 @@ public class AppView extends AppCompatActivity implements AdapterFragmentCallbac
     private final static int CREATE_SHORTCUT_ID = 6;
     private final static int EXPORT_LAUNCHER_FILE_ID = 7;
     private final static int HIDE_APP_ID = 8;
+    // Artemide TV: run the auto-tune with this app (no stream needed first, works with the remote)
+    private final static int AUTO_TUNE_ID = 90;
     private final static int START_WITH_VDISPLAY = 20;
     private final static int START_WITH_QUIT_VDISPLAY = 21;
 
@@ -483,6 +485,12 @@ public class AppView extends AppCompatActivity implements AdapterFragmentCallbac
 
         menu.add(Menu.NONE, VIEW_DETAILS_ID, 4, getResources().getString(R.string.applist_menu_details));
 
+        // Artemide TV: auto-tune with this app (only when nothing else is running on the PC)
+        if (com.limelight.BuildConfig.TV_BUILD &&
+                (lastRunningAppId == 0 || lastRunningAppId == selectedApp.app.getAppId())) {
+            menu.add(Menu.NONE, AUTO_TUNE_ID, 0, getResources().getString(R.string.applist_menu_auto_tune));
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             // Only add an option to create shortcut if box art is loaded
             // and when we're in grid-mode (not list-mode).
@@ -502,6 +510,33 @@ public class AppView extends AppCompatActivity implements AdapterFragmentCallbac
 
     @Override
     public void onContextMenuClosed(Menu menu) {
+    }
+
+    // Artemide TV: the auto-tune screen starts the test streams with this app
+    private void startAutoTune(AppObject app) {
+        if (computer == null || managerBinder == null ||
+                computer.state == ComputerDetails.State.OFFLINE || computer.activeAddress == null) {
+            Toast.makeText(this, getString(R.string.pair_pc_offline), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        final Intent gameIntent = ServerHelper.createStartIntent(this, app.app, computer, managerBinder,
+                prefConfig != null && prefConfig.useVirtualDisplay);
+        if (gameIntent == null || gameIntent.getComponent() == null ||
+                !Game.class.getName().equals(gameIntent.getComponent().getClassName())) {
+            Toast.makeText(this, "Auto-tune needs the stream on this TV's own screen", Toast.LENGTH_LONG).show();
+            return;
+        }
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(R.string.title_tv_auto_tune)
+                .setMessage(R.string.message_tv_auto_tune_start)
+                .setPositiveButton(R.string.button_tv_auto_tune_start, (d, w) -> {
+                    com.limelight.tv.TvAutoTune.begin(this, gameIntent);
+                    final Intent tune = new Intent(this, com.limelight.tv.TvAutoTuneActivity.class);
+                    tune.putExtra(com.limelight.tv.TvAutoTuneActivity.EXTRA_GAME_INTENT, gameIntent);
+                    startActivity(tune);
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
     }
 
     @Override
@@ -551,6 +586,11 @@ public class AppView extends AppCompatActivity implements AdapterFragmentCallbac
                     // Resume is the same as start for us
                     ServerHelper.doStart(AppView.this, app.app, computer, managerBinder, withVDiaplay);
                 }
+                return true;
+            }
+
+            case AUTO_TUNE_ID: {
+                startAutoTune(app);
                 return true;
             }
 

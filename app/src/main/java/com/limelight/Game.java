@@ -2422,6 +2422,13 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
             return true;
         }
 
+        // Artemide TV: Back on the TV remote opens the stream menu (it used to go to the PC as the
+        // gamepad's View/Select button, so the remote had no way into the menu). It opens on key up.
+        if (BuildConfig.TV_BUILD && event.getKeyCode() == KeyEvent.KEYCODE_BACK &&
+                ControllerHandler.isTvRemoteLike(event.getDevice())) {
+            return true;
+        }
+
         boolean handled = false;
 
         if (ControllerHandler.isGameControllerDevice(event.getDevice())) {
@@ -2509,6 +2516,15 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
             // Always return true, otherwise the back press will be propagated
             // up to the parent and finish the activity.
+            return true;
+        }
+
+        // Artemide TV: the TV remote's Back opens the stream menu (see handleKeyDown)
+        if (BuildConfig.TV_BUILD && event.getKeyCode() == KeyEvent.KEYCODE_BACK &&
+                ControllerHandler.isTvRemoteLike(event.getDevice())) {
+            if (!event.isCanceled()) {
+                showGameMenu(null);
+            }
             return true;
         }
 
@@ -4059,9 +4075,9 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 // Artemide TV auto-tune: warm-up, then the measured window, then the next test
                 if (BuildConfig.TV_BUILD && com.limelight.tv.TvAutoTune.isStepActive()) {
                     timerHandler.removeCallbacks(tuneConnectTimeout);
-                    timerHandler.postDelayed(tuneWindowStart, com.limelight.tv.TvAutoTune.WARMUP_MS);
-                    timerHandler.postDelayed(tuneStepEnd,
-                            com.limelight.tv.TvAutoTune.WARMUP_MS + com.limelight.tv.TvAutoTune.MEASURE_MS);
+                    final long warmup = com.limelight.tv.TvAutoTune.currentWarmupMs();
+                    timerHandler.postDelayed(tuneWindowStart, warmup);
+                    timerHandler.postDelayed(tuneStepEnd, warmup + com.limelight.tv.TvAutoTune.MEASURE_MS);
                 }
                 updatePipAutoEnter();
                 // Ensure frame-rate hint is applied when streaming starts (some devices need a re-apply)
