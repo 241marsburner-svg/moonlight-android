@@ -386,6 +386,8 @@
     <string name="summary_mtk_extra_decoder_keys">Also send MediaTek\'s vendor speed keys and an operating rate. Off uses the set measured as fastest on TCL TVs with this chip; turn on only to compare the decode time in the stream report.</string>
     <string name="title_tv_stream_report">Stream report after each stream</string>
     <string name="summary_tv_stream_report">After a stream, show what reached the screen, network pauses, decoder and audio figures. Measured with nothing drawn over the video, unlike the performance overlay.</string>
+    <string name="title_tv_apply_recommended">Use the recommended TV settings</string>
+    <string name="summary_tv_apply_recommended">One tap to what works best on this TV: 1440p, 60 FPS, HEVC, a bitrate that fits your connection, TV game pacing, nothing drawn over the video. Audio stays as it is.</string>
     <string name="title_tv_latency_test">Latency test (button to screen)</string>
     <string name="summary_tv_latency_test">On the PC, open latency-test.html from the download page full screen in the stream and press A, B, X or Y about 20 times, holding each press briefly. The stream report then shows how long a press takes to reach the screen and where the time goes.</string>
     <string name="pacing_group_latency">Latency</string>

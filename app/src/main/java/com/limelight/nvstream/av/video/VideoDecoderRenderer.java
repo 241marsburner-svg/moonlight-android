@@ -9,9 +9,10 @@ public abstract class VideoDecoderRenderer {
 
     // This is called once for each frame-start NALU. This means it will be called several times
     // for an IDR frame which contains several parameter sets and the I-frame data.
+    // receiveTimeUs / enqueueTimeUs: microseconds on CLOCK_MONOTONIC (System.nanoTime() / 1000).
     public abstract int submitDecodeUnit(byte[] decodeUnitData, int decodeUnitLength, int decodeUnitType,
                                          int frameNumber, int frameType, char frameHostProcessingLatency,
-                                         long receiveTimeMs, long enqueueTimeMs);
+                                         long receiveTimeUs, long enqueueTimeUs);
     
     public abstract void cleanup();
 

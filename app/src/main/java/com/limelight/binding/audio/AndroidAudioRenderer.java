@@ -51,7 +51,12 @@ private static void bumpAudioPriority() {
     private static final int TV_GROW_MS = 10;
     private static final int TV_SHRINK_MS = 5;
     private static final long TV_GROW_COOLDOWN_MS = 400;
-    private static final long TV_SHRINK_AFTER_MS = 30_000;
+    // Calm for this long: shrink by TV_SHRINK_MS, and again every TV_SHRINK_AFTER_MS after that
+    private static final long TV_SHRINK_AFTER_MS = 10_000;
+    // A gap this much longer than the cushion is a network stall: the video froze too, and a
+    // cushion big enough for it would put the sound that far behind the picture for minutes.
+    // Only gaps a little bigger than the cushion make it grow.
+    private static final int TV_STALL_EXTRA_MS = 40;
     // "Nearly dry": less than this much audio left in the track
     private static final int TV_DRY_MS = 4;
     private static final int TV_TRIM_SLACK_MS = 15;
@@ -74,6 +79,7 @@ private static void bumpAudioPriority() {
     private long tvLastWindowMinFrames = -1;
     private long tvLastTrimMs;
     private long tvNextLevelReportMs;
+    private long tvLastPacketMs;
 
     private AudioTrack track;
     private boolean audioOff;
@@ -103,8 +109,8 @@ private static void bumpAudioPriority() {
     // How far the adaptive cushion may grow: low lag accepts the odd dropout instead
     private int tvBufferMaxMs() {
         if (PreferenceConfiguration.AUDIO_BUFFER_LARGE.equals(bufferMode)) return TV_MAX_TARGET_MS;
-        if (PreferenceConfiguration.AUDIO_BUFFER_LOW_LAG.equals(bufferMode)) return 60;
-        return 150;
+        if (PreferenceConfiguration.AUDIO_BUFFER_LOW_LAG.equals(bufferMode)) return 50;
+        return 90;
     }
 
     private AudioTrack createAudioTrack(int channelConfig, int sampleRate, int bufferSize, boolean lowLatency) {
@@ -376,6 +382,9 @@ private static void bumpAudioPriority() {
     private void playDecodedAudioTv(short[] audioData) {
         final int frames = audioData.length / tvChannelCount;
         final long nowMs = android.os.SystemClock.uptimeMillis();
+        // How long this packet took after the previous one (5 ms normally)
+        final long packetGapMs = tvLastPacketMs > 0 ? nowMs - tvLastPacketMs : 0;
+        tvLastPacketMs = nowMs;
 
         final long head = track.getPlaybackHeadPosition() & 0xFFFFFFFFL;
         long queued = tvFramesWritten - head;
@@ -405,10 +414,12 @@ private static void bumpAudioPriority() {
         }
 
         // Adapt the cushion to how bunchy the network is
+        final long targetMsNow = (long) tvTargetFrames * 1000 / tvSampleRate;
+        final boolean stall = packetGapMs > targetMsNow + TV_STALL_EXTRA_MS;
         if (tvCushionBuilt && playing && queued * 1000 < (long) TV_DRY_MS * tvSampleRate) {
             tvLastDryMs = nowMs;
             final int maxTarget = (int) ((long) tvSampleRate * tvBufferMaxMs() / 1000);
-            if (tvTargetFrames < maxTarget && nowMs - tvLastGrowMs >= TV_GROW_COOLDOWN_MS) {
+            if (!stall && tvTargetFrames < maxTarget && nowMs - tvLastGrowMs >= TV_GROW_COOLDOWN_MS) {
                 tvTargetFrames = Math.min(maxTarget, tvTargetFrames + tvSampleRate * TV_GROW_MS / 1000);
                 tvLastGrowMs = nowMs;
             }

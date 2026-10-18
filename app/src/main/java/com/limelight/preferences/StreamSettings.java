@@ -1255,6 +1255,33 @@ public class StreamSettings extends AppCompatActivity {
                 });
             }
 
+            // Artemide TV: one tap to the settings that work best on this TV
+            final Preference recommended = findPreference("pref_tv_apply_recommended");
+            if (recommended != null) {
+                if (!BuildConfig.TV_BUILD) {
+                    recommended.setVisible(false);
+                } else {
+                    recommended.setOnPreferenceClickListener(preference -> {
+                        final Activity a = getActivity();
+                        if (a == null) {
+                            return true;
+                        }
+                        new android.app.AlertDialog.Builder(a)
+                                .setTitle(R.string.title_tv_apply_recommended)
+                                .setMessage(R.string.summary_tv_apply_recommended)
+                                .setPositiveButton(android.R.string.ok, (d, w) -> {
+                                    final String summary = com.limelight.tv.TvRecommendedSettings.apply(a);
+                                    Toast.makeText(a, summary, Toast.LENGTH_LONG).show();
+                                    // Rebuild the screen so it shows the new values
+                                    a.recreate();
+                                })
+                                .setNegativeButton(android.R.string.cancel, null)
+                                .show();
+                        return true;
+                    });
+                }
+            }
+
         }
 
         public void initializePreferences() {

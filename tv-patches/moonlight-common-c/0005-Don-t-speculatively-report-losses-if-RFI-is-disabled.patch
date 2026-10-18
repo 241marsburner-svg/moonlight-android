@@ -1,7 +1,7 @@
-From 788bc340fa1afe7a38aa77befe575ad6c265a380 Mon Sep 17 00:00:00 2001
+From 93bba92f6894ef361112872b94bfe081c5f23a50 Mon Sep 17 00:00:00 2001
 From: Cameron Gutman <aicommander@gmail.com>
 Date: Tue, 8 Sep 2026 23:12:41 -0500
-Subject: [PATCH 3/3] Don't speculatively report losses if RFI is disabled
+Subject: [PATCH 5/5] Don't speculatively report losses if RFI is disabled
 
 Not only does it unnecessarily cause guaranteed loss of the target frame, it can lead to 120 consecutive frames dropped if we fully receive that frame since we've already triggered an IDR frame wait but didn't tell the depacketizer to request an IDR frame.
 
@@ -11,10 +11,10 @@ Closes #147
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/src/RtpVideoQueue.c b/src/RtpVideoQueue.c
-index 0f4ac61..f393dee 100644
+index 0914fe8..a4e022e 100644
 --- a/src/RtpVideoQueue.c
 +++ b/src/RtpVideoQueue.c
-@@ -210,7 +210,7 @@ static int reconstructFrame(PRTP_VIDEO_QUEUE queue) {
+@@ -212,7 +212,7 @@ static int reconstructFrame(PRTP_VIDEO_QUEUE queue) {
          // based on the packets we've received (or not) so far. If the number of missing shards exceeds the total
          // needed shards, there is no hope of recovering the data. The only way we could recover this frame is by
          // receiving OOS data, which is unlikely because we've not seen any recently from this host.

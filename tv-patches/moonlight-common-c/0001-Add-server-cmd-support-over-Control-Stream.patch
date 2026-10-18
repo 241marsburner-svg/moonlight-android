@@ -1,0 +1,150 @@
+From 9f88c119481fa4688f302095ea367fe2c22b3db7 Mon Sep 17 00:00:00 2001
+From: Yukino Song <nutosservice@gmail.com>
+Date: Wed, 11 Sep 2024 01:59:25 +0800
+Subject: [PATCH 1/5] Add server cmd support over Control Stream
+
+---
+ src/ControlStream.c      | 35 ++++++++++++++++++++++++++++++++++-
+ src/Input.h              |  7 +++++++
+ src/Limelight-internal.h |  1 +
+ src/Limelight.h          |  3 +++
+ 4 files changed, 45 insertions(+), 1 deletion(-)
+
+diff --git a/src/ControlStream.c b/src/ControlStream.c
+index 2b5182e..8ea2402 100644
+--- a/src/ControlStream.c
++++ b/src/ControlStream.c
+@@ -140,6 +140,9 @@ static PPLT_CRYPTO_CONTEXT decryptionCtx;
+ #define IDX_SET_MOTION_EVENT 10
+ #define IDX_SET_RGB_LED 11
+ #define IDX_DS_ADAPTIVE_TRIGGERS 12
++#define IDX_EXEC_SERVER_CMD 13
++#define IDX_SET_CLIPBOARD 14
++#define IDX_FILE_TRANSFER_NONCE_REQUEST 15
+ 
+ #define CONTROL_STREAM_TIMEOUT_SEC 10
+ #define CONTROL_STREAM_LINGER_TIMEOUT_SEC 2
+@@ -157,6 +160,9 @@ static const short packetTypesGen3[] = {
+     -1,     // Rumble triggers (unused)
+     -1,     // Set motion event (unused)
+     -1,     // Set RGB LED (unused)
++    -1,     // Execute Server Command (unused)
++    -1,     // Set Clipboard (unused)
++    -1,     // File transfer nonce request (unused)
+ };
+ static const short packetTypesGen4[] = {
+     0x0606, // Request IDR frame
+@@ -171,6 +177,9 @@ static const short packetTypesGen4[] = {
+     -1,     // Rumble triggers (unused)
+     -1,     // Set motion event (unused)
+     -1,     // Set RGB LED (unused)
++    -1,     // Execute Server Command (unused)
++    -1,     // Set Clipboard (unused)
++    -1,     // File transfer nonce request (unused)
+ };
+ static const short packetTypesGen5[] = {
+     0x0305, // Start A
+@@ -185,6 +194,9 @@ static const short packetTypesGen5[] = {
+     -1,     // Rumble triggers (unused)
+     -1,     // Set motion event (unused)
+     -1,     // Set RGB LED (unused)
++    -1,     // Execute Server Command (unused)
++    -1,     // Set Clipboard (unused)
++    -1,     // File transfer nonce request (unused)
+ };
+ static const short packetTypesGen7[] = {
+     0x0305, // Start A
+@@ -199,6 +211,9 @@ static const short packetTypesGen7[] = {
+     -1,     // Rumble triggers (unused)
+     -1,     // Set motion event (unused)
+     -1,     // Set RGB LED (unused)
++    -1,     // Execute Server Command (unused)
++    -1,     // Set Clipboard (unused)
++    -1,     // File transfer nonce request (unused)
+ };
+ static const short packetTypesGen7Enc[] = {
+     0x0302, // Request IDR frame
+@@ -214,6 +229,9 @@ static const short packetTypesGen7Enc[] = {
+     0x5501, // Set motion event (Sunshine protocol extension)
+     0x5502, // Set RGB LED (Sunshine protocol extension)
+     0x5503, // Set Adaptive Triggers (Sunshine protocol extension)
++    0x3000, // Execute Server Command (Apollo protocol extension)
++    0x3001, // Set Clipboard (Apollo protocol extension)
++    0x3002, // File transfer nonce request (Apollo protocol extension)
+ };
+ 
+ static const char requestIdrFrameGen3[] = { 0, 0 };
+@@ -1026,7 +1044,9 @@ static bool needsAsyncCallback(unsigned short packetType) {
+            packetType == packetTypes[IDX_SET_MOTION_EVENT] ||
+            packetType == packetTypes[IDX_SET_RGB_LED] ||
+            packetType == packetTypes[IDX_HDR_INFO] ||
+-           packetType == packetTypes[IDX_DS_ADAPTIVE_TRIGGERS];
++           packetType == packetTypes[IDX_DS_ADAPTIVE_TRIGGERS] ||
++           packetType == packetTypes[IDX_SET_CLIPBOARD] ||
++           packetType == packetTypes[IDX_FILE_TRANSFER_NONCE_REQUEST];
+ }
+ 
+ static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLength) {
+@@ -2084,3 +2104,16 @@ bool LiGetHdrMetadata(PSS_HDR_METADATA metadata) {
+     *metadata = hdrMetadata;
+     return true;
+ }
++
++// Send a server cmd request to the streaming machine
++int LiSendExecServerCmd(uint8_t cmdId) {
++    uint8_t payload[4] = {cmdId, 0, 0, 0};
++    return sendMessageAndForget(
++        packetTypes[IDX_EXEC_SERVER_CMD],
++        sizeof(payload),
++        payload,
++        CTRL_CHANNEL_SERVERCTL,
++        ENET_PACKET_FLAG_RELIABLE,
++        false
++    );
++}
+\ No newline at end of file
+diff --git a/src/Input.h b/src/Input.h
+index 1c5166d..9b241d8 100644
+--- a/src/Input.h
++++ b/src/Input.h
+@@ -196,4 +196,11 @@ typedef struct _SS_CONTROLLER_BATTERY_PACKET {
+     uint8_t zero[1]; // Alignment/reserved
+ } SS_CONTROLLER_BATTERY_PACKET, *PSS_CONTROLLER_BATTERY_PACKET;
+ 
++#define AP_SERVER_CMD_MAGIC 0x80000000
++typedef struct _AP_SERVER_CMD_PACKET {
++    NV_INPUT_HEADER header;
++    uint8_t cmdId;
++    uint8_t zero[3]; // Alignment/reserved
++} AP_SERVER_CMD_PACKET, *PAP_SERVER_CMD_PACKET;
++
+ #pragma pack(pop)
+diff --git a/src/Limelight-internal.h b/src/Limelight-internal.h
+index e1314c5..0d07e06 100644
+--- a/src/Limelight-internal.h
++++ b/src/Limelight-internal.h
+@@ -61,6 +61,7 @@ extern uint32_t EncryptionFeaturesEnabled;
+ #define CTRL_CHANNEL_PEN          0x04
+ #define CTRL_CHANNEL_TOUCH        0x05
+ #define CTRL_CHANNEL_UTF8         0x06
++#define CTRL_CHANNEL_SERVERCTL    0x08
+ #define CTRL_CHANNEL_GAMEPAD_BASE 0x10 // 0x10 to 0x1F by controller index
+ #define CTRL_CHANNEL_SENSOR_BASE  0x20 // 0x20 to 0x2F by controller index
+ #define CTRL_CHANNEL_COUNT        0x30
+diff --git a/src/Limelight.h b/src/Limelight.h
+index 5e1bbcd..fc937dd 100644
+--- a/src/Limelight.h
++++ b/src/Limelight.h
+@@ -569,6 +569,9 @@ const char* LiGetStageName(int stage);
+ // This function may only be called between LiStartConnection() and LiStopConnection().
+ bool LiGetEstimatedRttInfo(uint32_t* estimatedRtt, uint32_t* estimatedRttVariance);
+ 
++// This function sends a request to the server to execute the requested cmd id.
++int LiSendExecServerCmd(uint8_t cmdId);
++
+ // This function queues a relative mouse move event to be sent to the remote server.
+ int LiSendMouseMoveEvent(short deltaX, short deltaY);
+ 
+-- 
+2.43.0
+

@@ -1,0 +1,51 @@
+From d1de64fdbe8aa9b76292a3870f1d857c94734e8a Mon Sep 17 00:00:00 2001
+From: Yukino Song <nutosservice@gmail.com>
+Date: Mon, 1 Sep 2025 08:56:54 +0800
+Subject: [PATCH 2/5] Add send empty payload method
+
+---
+ src/ControlStream.c | 13 +++++++++++++
+ src/Limelight.h     |  4 ++++
+ 2 files changed, 17 insertions(+)
+
+diff --git a/src/ControlStream.c b/src/ControlStream.c
+index 8ea2402..c4d5519 100644
+--- a/src/ControlStream.c
++++ b/src/ControlStream.c
+@@ -2116,4 +2116,17 @@ int LiSendExecServerCmd(uint8_t cmdId) {
+         ENET_PACKET_FLAG_RELIABLE,
+         false
+     );
++}
++
++// Send an empty keep-alive payload to the streaming machine (Apollo protocol extension)
++int LiSendEmptyPayload() {
++    uint8_t payload[4] = {0xAA, 0x55, 0xAA, 0x55};
++    return sendMessageAndForget(
++        0x00,
++        sizeof(payload),
++        payload,
++        CTRL_CHANNEL_SERVERCTL,
++        ENET_PACKET_FLAG_RELIABLE,
++        false
++    );
+ }
+\ No newline at end of file
+diff --git a/src/Limelight.h b/src/Limelight.h
+index fc937dd..2827f22 100644
+--- a/src/Limelight.h
++++ b/src/Limelight.h
+@@ -572,6 +572,10 @@ bool LiGetEstimatedRttInfo(uint32_t* estimatedRtt, uint32_t* estimatedRttVarianc
+ // This function sends a request to the server to execute the requested cmd id.
+ int LiSendExecServerCmd(uint8_t cmdId);
+ 
++// This function sends an empty payload to the server.
++// This method exists here for workaround client side wifi sleeps.
++int LiSendEmptyPayload();
++
+ // This function queues a relative mouse move event to be sent to the remote server.
+ int LiSendMouseMoveEvent(short deltaX, short deltaY);
+ 
+-- 
+2.43.0
+

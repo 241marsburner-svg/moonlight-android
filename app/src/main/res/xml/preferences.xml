@@ -7,8 +7,13 @@
     <PreferenceCategory
         android:key="category_video_settings"
         android:title="@string/category_video_settings"
-        app:initialExpandedChildrenCount="3"
+        app:initialExpandedChildrenCount="4"
         app:iconSpaceReserved="false">
+        <Preference
+            android:key="pref_tv_apply_recommended"
+            android:summary="@string/summary_tv_apply_recommended"
+            android:title="@string/title_tv_apply_recommended"
+            app:iconSpaceReserved="false" />
         <ListPreference
             android:defaultValue="1280x720"
             android:entries="@array/resolution_names"

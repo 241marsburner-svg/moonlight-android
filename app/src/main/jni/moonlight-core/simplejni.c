@@ -223,6 +223,27 @@ Java_com_limelight_nvstream_jni_MoonBridge_getEstimatedRttInfo(JNIEnv *env, jcla
     return ((uint64_t)rtt << 32U) | variance;
 }
 
+// Artemide TV: audio RTP counters for the stream report. Audio packets come every 5 ms and are
+// small, so how many had to be rebuilt from FEC (or could not be) is a direct look at Wi-Fi loss.
+// {audio packets, FEC packets, recovered by FEC, FEC blocks lost, out of order, invalid}
+// The counters stay readable after the stream ends, until the next one starts.
+JNIEXPORT jintArray JNICALL
+Java_com_limelight_nvstream_jni_MoonBridge_getAudioRtpStats(JNIEnv *env, jclass clazz) {
+    const RTP_AUDIO_STATS* stats = LiGetRTPAudioStats();
+    jint values[6];
+    values[0] = (jint)stats->packetCountAudio;
+    values[1] = (jint)stats->packetCountFec;
+    values[2] = (jint)stats->packetCountFecRecovered;
+    values[3] = (jint)stats->packetCountFecFailed;
+    values[4] = (jint)stats->packetCountOOS;
+    values[5] = (jint)(stats->packetCountInvalid + stats->packetCountFecInvalid);
+    jintArray result = (*env)->NewIntArray(env, 6);
+    if (result != NULL) {
+        (*env)->SetIntArrayRegion(env, result, 0, 6, values);
+    }
+    return result;
+}
+
 JNIEXPORT jstring JNICALL
 Java_com_limelight_nvstream_jni_MoonBridge_getLaunchUrlQueryParameters(JNIEnv *env, jclass clazz) {
     return (*env)->NewStringUTF(env, LiGetLaunchUrlQueryParameters());

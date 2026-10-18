@@ -406,6 +406,8 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
     private long lastTimestampUs;
     private int lastFrameNumber;
+    // Artemide TV: frames dropped because they did not fit into the decoder's input buffer
+    private int oversizedDecodeUnits;
     private int refreshRate;
     private float refreshRateHz;
     private PreferenceConfiguration prefs;
@@ -844,6 +846,20 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         return this.videoFormat;
     }
 
+    /**
+     * Artemide TV: MediaTek's Codec2 decoders default to 4 MB input buffers. After a loss at high
+     * bitrates an IDR frame can be bigger, which used to end the stream ("Decode unit length ...
+     * too large"). Room for half a second of stream, 4 to 32 MB (measured by moonlight-tcl on a C8K).
+     */
+    private void applyTvMaxInputSize(MediaFormat format) {
+        if (!BuildConfig.TV_BUILD || prefs == null || prefs.bitrate <= 0) {
+            return;
+        }
+        final long halfSecondBytes = (long) prefs.bitrate * 1000L / 8L / 2L;
+        final int maxInputSize = (int) Math.min(32L << 20, Math.max(4L << 20, halfSecondBytes));
+        format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, maxInputSize);
+    }
+
     private MediaFormat createBaseMediaFormat(String mimeType) {
         MediaFormat videoFormat = MediaFormat.createVideoFormat(mimeType, coldCfg.initialWidth, coldCfg.initialHeight);
 
@@ -1186,6 +1202,10 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             MediaFormat mediaFormat = createBaseMediaFormat(mimeType);
             // This will try low latency options until we find one that works (or we give up).
             boolean newFormat = MediaCodecHelper.setDecoderLowLatencyOptions(mediaFormat, selectedDecoderInfo, prefs.enableUltraLowLatency, tryNumber);
+            if (newFormat) {
+                // (The last, plain try keeps the decoder's own input buffer size as a fallback)
+                applyTvMaxInputSize(mediaFormat);
+            }
             //todo 色彩格式
 //            MediaCodecInfo.CodecCapabilities codecCapabilities = selectedDecoderInfo.getCapabilitiesForType(mimeType);
 //            int[] colorFormats=codecCapabilities.colorFormats;
@@ -2810,7 +2830,8 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     @Override
     public int submitDecodeUnit(byte[] decodeUnitData, int decodeUnitLength, int decodeUnitType,
                                 int frameNumber, int frameType, char frameHostProcessingLatency,
-                                long receiveTimeMs, long enqueueTimeMs) {
+                                long receiveTimeUs, long enqueueTimeUs) {
+        // (Both times: microseconds on CLOCK_MONOTONIC, i.e. System.nanoTime() / 1000)
         // Artemide TV: with direct submit this is the network receive thread; hint it too
         if (!perfHintsSubmitThreadAdded) {
             final com.limelight.tv.TvPerformanceHints hints = perfHints;
@@ -2833,6 +2854,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             activeWindowVideoStats.framesLost += frameNumber - lastFrameNumber - 1;
             activeWindowVideoStats.totalFrames += frameNumber - lastFrameNumber - 1;
             activeWindowVideoStats.frameLossEvents++;
+            TvDiagnostics.onFramesLost(frameNumber - lastFrameNumber - 1);
         }
 
         // Reset CSD data for each IDR frame
@@ -3218,7 +3240,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             // Count time from first packet received to enqueue time as receive time
             // We will count DU queue time as part of decoding, because it is directly
             // caused by a slow decoder.
-            activeWindowVideoStats.totalTimeMs += enqueueTimeMs - receiveTimeMs;
+            activeWindowVideoStats.totalTimeMs += (enqueueTimeUs / 1000L) - (receiveTimeUs / 1000L);
         }
 
         if (!fetchNextInputBuffer()) {
@@ -3271,7 +3293,8 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             }
         }
 
-        long timestampUs = enqueueTimeMs * 1000;
+        // The frame's arrival time, now with microsecond precision (was whole milliseconds)
+        long timestampUs = enqueueTimeUs;
         if (timestampUs <= lastTimestampUs) {
             // We can't submit multiple buffers with the same timestamp
             // so bump it up by one before queuing
@@ -3285,6 +3308,16 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         numFramesIn++;
 
         if (decodeUnitLength > nextInputBuffer.limit() - nextInputBuffer.position()) {
+            // Artemide TV (from moonlight-tcl): a frame bigger than the decoder's input buffer is
+            // dropped and a fresh IDR frame requested, instead of ending the stream. The held
+            // buffer is reused for the next frame, so reset it (it may already hold the CSD).
+            oversizedDecodeUnits++;
+            if (BuildConfig.TV_BUILD && oversizedDecodeUnits < 30) {
+                LimeLog.warning("Decode unit length " + decodeUnitLength + " too large for input buffer " +
+                        nextInputBuffer.limit() + " (" + oversizedDecodeUnits + " so far), requesting IDR");
+                nextInputBuffer.clear();
+                return MoonBridge.DR_NEED_IDR;
+            }
             IllegalArgumentException exception = new IllegalArgumentException(
                     "Decode unit length "+decodeUnitLength+" too large for input buffer "+nextInputBuffer.limit());
             if (!coldCfg.reportedCrash) {

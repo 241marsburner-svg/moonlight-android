@@ -161,6 +161,22 @@ final class TvFramePacer {
         // Frames faster than the display (e.g. 90 fps on 60 Hz) always replace each other;
         // that says nothing about the network, so don't grow the buffer for it
         final boolean streamFasterThanDisplay = frame < (refresh * 9) / 10;
+
+        if (game && streamFasterThanDisplay) {
+            // TV game with more frames than refreshes: no buffer, every frame goes to the next
+            // refresh it can make and the newest one wins there. A timestamp of "now" lets
+            // SurfaceFlinger take the frame at its very next wake-up; a planned refresh would rest
+            // on a guess of SurfaceFlinger's deadline, which costs up to a refresh when it errs on
+            // the safe side. Nothing is planned, so replaced frames are not counted as drops.
+            nextIdealNs = 0L;
+            lastSlotNs = 0L;
+            capRun = 0;
+            spareStreak = 0;
+            TvDiagnostics.onFrameScheduled(0L, false, false, false);
+            TvDiagnostics.setVsyncInfo(haveGrid ? refresh : 0L, presentationGrid, 0L);
+            TvDiagnostics.setBufferLimitFrames(0);
+            return nowNs;
+        }
         if (game && !streamFasterThanDisplay && gameLeadFrames > GAME_MIN_LEAD_FRAMES &&
                 nowNs - Math.max(lastCapNs, lastLeadChangeNs) >= GAME_SHRINK_AFTER_NS) {
             gameLeadFrames--;

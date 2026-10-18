@@ -218,14 +218,16 @@ public class MoonBridge {
     //todo 不显示画面
     public static int bridgeDrSubmitDecodeUnit(byte[] decodeUnitData, int decodeUnitLength, int decodeUnitType,
                                                int frameNumber, int frameType, char frameHostProcessingLatency,
-                                               long receiveTimeMs, long enqueueTimeMs) {
+                                               long receiveTimeUs, long enqueueTimeUs) {
+        // Artemide TV: both times are microseconds on CLOCK_MONOTONIC (the System.nanoTime() and
+        // SystemClock.uptimeMillis() clock), converted in callbacks.c
         if (videoRenderer != null) {
             // Artemide TV diagnostics: was the frame bunched on arrival, and how long was it
             // in the app before it reached the decoder?
-            com.limelight.binding.video.TvDiagnostics.onVideoFrameArrived(receiveTimeMs);
+            com.limelight.binding.video.TvDiagnostics.onVideoFrameArrived(receiveTimeUs / 1000L);
             final long submitStartNs = System.nanoTime();
             final int ret = videoRenderer.submitDecodeUnit(decodeUnitData, decodeUnitLength,
-                    decodeUnitType, frameNumber, frameType, frameHostProcessingLatency, receiveTimeMs, enqueueTimeMs);
+                    decodeUnitType, frameNumber, frameType, frameHostProcessingLatency, receiveTimeUs, enqueueTimeUs);
             com.limelight.binding.video.TvDiagnostics.onSubmitDone(System.nanoTime() - submitStartNs);
             if (ret == DR_NEED_IDR) {
                 // Artemide TV diagnostics: every one of these drops frames until a keyframe arrives
@@ -423,6 +425,9 @@ public class MoonBridge {
 
     // The RTT is in the top 32 bits, and the RTT variance is in the bottom 32 bits
     public static native long getEstimatedRttInfo();
+
+    // Artemide TV: {audio packets, FEC packets, recovered by FEC, FEC blocks lost, out of order, invalid}
+    public static native int[] getAudioRtpStats();
 
     public static native String getLaunchUrlQueryParameters();
 

@@ -80,6 +80,39 @@ public final class TvDiagnostics {
     private static long snapPresentSamples, snapPresentOffsetSum, snapPresentSlips;
     private static int snapUnderruns;
 
+    // --- Network loss and round trip (session, for the stream report) ---
+    private static final AtomicLong framesLostTotal = new AtomicLong();
+    private static final AtomicLong frameLossEvents = new AtomicLong();
+    private static final AtomicLong rttSumMs = new AtomicLong();
+    private static final AtomicLong rttSamples = new AtomicLong();
+    private static volatile int maxRttMs;
+    private static volatile int lastRttVarianceMs;
+
+    /** Frames that never arrived complete (network loss FEC could not repair). */
+    public static void onFramesLost(int frames) {
+        if (frames > 0) {
+            framesLostTotal.addAndGet(frames);
+            frameLossEvents.incrementAndGet();
+        }
+    }
+
+    /** @param rttInfo MoonBridge.getEstimatedRttInfo(): rtt << 32 | variance, -1 = unknown */
+    public static void addRttSample(long rttInfo) {
+        if (rttInfo < 0) {
+            return;
+        }
+        final int rtt = (int) (rttInfo >> 32);
+        if (rtt <= 0 || rtt > 5000) {
+            return;
+        }
+        rttSumMs.addAndGet(rtt);
+        rttSamples.incrementAndGet();
+        if (rtt > maxRttMs) {
+            maxRttMs = rtt;
+        }
+        lastRttVarianceMs = (int) (rttInfo & 0xFFFFFFFFL);
+    }
+
     // --- Session (for the stream report) ---
     private static volatile long sessionStartNs;
     private static long gcCountAtStart = -1, gcTimeAtStart, blockingGcCountAtStart, blockingGcTimeAtStart;
@@ -96,6 +129,12 @@ public final class TvDiagnostics {
         blockingGcCountAtStart = gcStat("art.gc.blocking-gc-count");
         blockingGcTimeAtStart = gcStat("art.gc.blocking-gc-time");
         adpfState = "off";
+        framesLostTotal.set(0);
+        frameLossEvents.set(0);
+        rttSumMs.set(0);
+        rttSamples.set(0);
+        maxRttMs = 0;
+        lastRttVarianceMs = 0;
         framesReleased.set(0);
         framesDisplayed.set(0);
         displayGaps.set(0);
@@ -621,9 +660,18 @@ public final class TvDiagnostics {
                 overlayOn ? " · overlay was ON (adds delay)" : ""));
 
         // What reached the screen
+        final float screenHz = displayRefreshHz(context);
+        final boolean fasterThanScreen = prefs != null && screenHz > 1f && prefs.fps > screenHz * 1.1f;
         if (displayed > 0) {
-            sb.append(String.format(Locale.US, "Screen: %,d of %,d frames shown · %d hitches (longest %d ms) · display drops %d\n",
-                    displayed, released, displayGaps.get(), maxDisplayIntervalNs / 1_000_000L, unplannedDrops.get()));
+            final long pN = presentSamples.get();
+            final String onTime = pN > 0
+                    ? String.format(Locale.US, " · %.0f%% on time", 100.0 * (pN - presentSlips.get()) / pN)
+                    : "";
+            sb.append(String.format(Locale.US, "Screen: %,d of %,d frames shown%s · %d hitches (longest %d ms) · display drops %d%s\n",
+                    displayed, released, onTime, displayGaps.get(), maxDisplayIntervalNs / 1_000_000L,
+                    unplannedDrops.get(),
+                    fasterThanScreen ? String.format(Locale.US, " (stream faster than the %.0f Hz screen: it can show %.0f per second)",
+                            screenHz, screenHz) : ""));
         } else {
             sb.append(String.format(Locale.US, "Screen: %,d frames sent to the display\n", released));
         }
@@ -633,6 +681,24 @@ public final class TvDiagnostics {
                 netGaps, netGaps * 60.0 / secs, maxVideoNetGapMs,
                 gapPeriodEmaMs > 0 ? String.format(Locale.US, ", about every %d ms", gapPeriodEmaMs) : "",
                 bunchedPct, audioArrivalGaps.get(), maxAudioArrivalGapMs));
+
+        // Loss and round trip: lost frames are what FEC could not repair; rebuilt audio packets
+        // (5 ms each, small) show how lossy the link is even when nothing visible happened
+        final StringBuilder loss = new StringBuilder("Loss: ");
+        loss.append(String.format(Locale.US, "%d video frames lost (%d times)", framesLostTotal.get(), frameLossEvents.get()));
+        try {
+            final int[] a = com.limelight.nvstream.jni.MoonBridge.getAudioRtpStats();
+            if (a != null && a.length >= 4 && a[0] > 0) {
+                loss.append(String.format(Locale.US, " · audio packets rebuilt by FEC %d of %,d (%.2f%%), lost %d",
+                        a[2], a[0], 100.0 * a[2] / a[0], a[3]));
+            }
+        } catch (Throwable ignored) { }
+        final long rttN = rttSamples.get();
+        if (rttN > 0) {
+            loss.append(String.format(Locale.US, " · round trip %d ms (max %d, jitter %d)",
+                    Math.round(rttSumMs.get() / (double) rttN), maxRttMs, lastRttVarianceMs));
+        }
+        sb.append(loss).append('\n');
 
         // Delay contributions
         sb.append(String.format(Locale.US, "Delay: decode %s · jitter buffer +%.1f ms (max %d ms, late %d, trims %d, replaced %d) · in app %.1f ms (max %d)\n",
@@ -678,9 +744,53 @@ public final class TvDiagnostics {
                 .append(" · boosted threads ").append(boostedThreads)
                 .append(" · CPU hints ").append(adpfState).append('\n');
 
+        // Settings that cost delay or smoothness on this TV (nothing printed when all is well)
+        final String check = settingsCheck(prefs);
+        if (!check.isEmpty()) {
+            sb.append("Check: ").append(check).append('\n');
+        }
+
         sb.append(describeNetwork(context)).append(" · ").append(describeDisplay(context))
                 .append(" · Android ").append(Build.VERSION.RELEASE);
         return sb.toString();
+    }
+
+    private static float displayRefreshHz(Context context) {
+        try {
+            final Display d = (context instanceof Activity)
+                    ? ((Activity) context).getWindowManager().getDefaultDisplay()
+                    : ((WindowManager) context.getSystemService(Context.WINDOW_SERVICE)).getDefaultDisplay();
+            return d != null ? d.getRefreshRate() : 0f;
+        } catch (Throwable t) {
+            return 0f;
+        }
+    }
+
+    /** Settings that are known to hurt on this TV, as a short list (empty = all fine). */
+    private static String settingsCheck(PreferenceConfiguration prefs) {
+        if (prefs == null) {
+            return "";
+        }
+        final StringBuilder b = new StringBuilder();
+        if (!PreferenceConfiguration.isTvPacing(prefs.framePacing)) {
+            b.append("frame pacing is not TV game/TV smooth; ");
+        }
+        if (prefs.videoUpscaleEnable || prefs.gpuPathMode) {
+            b.append("GPU path/upscaling is on (extra delay on this GPU); ");
+        }
+        if (prefs.mtkExtraDecoderKeys) {
+            b.append("MediaTek extra decoder keys are on (experimental); ");
+        }
+        if (prefs.width >= 3840 && prefs.fps > 60) {
+            b.append("4K above 60 fps is more than the decoder can do; ");
+        }
+        if (prefs.bitrate > 150_000) {
+            b.append("bitrate above 150 Mbps; ");
+        }
+        if (b.length() > 2) {
+            b.setLength(b.length() - 2);
+        }
+        return b.toString();
     }
 
     private static String describePacing(PreferenceConfiguration prefs) {

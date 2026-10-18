@@ -443,6 +443,10 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     private final Runnable tvThreadBoost = () -> {
         if (connected) {
             com.limelight.tv.TvThreadBooster.boostStreamingThreads();
+            // Round-trip samples for the stream report
+            try {
+                com.limelight.binding.video.TvDiagnostics.addRttSample(MoonBridge.getEstimatedRttInfo());
+            } catch (Throwable ignored) { }
             timerHandler.postDelayed(Game.this.tvThreadBoost, 5000);
         }
     };
@@ -640,6 +644,11 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                             InputDevice.SOURCE_CLASS_POSITION | // Touchpads
                             InputDevice.SOURCE_CLASS_TRACKBALL // Mice (pointer capture)
             );
+            // ViewGroup only passes on a child's unbuffered request for gamepad and keyboard
+            // sources if that child holds the focus, so the two requests above can be lost and
+            // stick movements then wait for the next frame (up to 16 ms). Asking on the window's
+            // decor view applies to the whole window (fix from pabragin/moonlight-tcl).
+            requestUnbufferedInputForWindow();
         }
 
         // Artemide TV: ask the TV for its low-latency (game) picture mode while we stream.
@@ -1506,6 +1515,11 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
 
+        if (hasFocus) {
+            // Focus moved around (menu, dialog): make sure input is still delivered unbuffered
+            requestUnbufferedInputForWindow();
+        }
+
         // We can't guarantee the state of modifiers keys which may have
         // lifted while focus was not on us. Clear the modifier state.
         this.modifierFlags = 0;
@@ -1513,6 +1527,22 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         // With Android native pointer capture, capture is lost when focus is lost,
         // so it must be requested again when focus is regained.
         inputCaptureProvider.onWindowFocusChanged(hasFocus);
+    }
+
+    // Unbuffered input for the whole window, regardless of which view holds the focus
+    private void requestUnbufferedInputForWindow() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                getWindow().getDecorView().requestUnbufferedDispatch(
+                        InputDevice.SOURCE_CLASS_BUTTON |
+                                InputDevice.SOURCE_CLASS_JOYSTICK |
+                                InputDevice.SOURCE_CLASS_POINTER |
+                                InputDevice.SOURCE_CLASS_POSITION |
+                                InputDevice.SOURCE_CLASS_TRACKBALL);
+            } catch (Throwable t) {
+                LimeLog.warning("Unbuffered input request failed: " + t);
+            }
+        }
     }
 
     @Override

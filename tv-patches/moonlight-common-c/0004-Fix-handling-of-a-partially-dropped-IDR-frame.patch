@@ -1,17 +1,17 @@
-From 4e4d291e6ff8ea5546aa8e91e6e7579f6eeb72c5 Mon Sep 17 00:00:00 2001
+From 094ddc0d0e0b3959cb69d50cae036759de078b62 Mon Sep 17 00:00:00 2001
 From: Cameron Gutman <aicommander@gmail.com>
 Date: Tue, 8 Sep 2026 22:58:14 -0500
-Subject: [PATCH 2/3] Fix handling of a partially dropped IDR frame
+Subject: [PATCH 4/5] Fix handling of a partially dropped IDR frame
 
 ---
  src/VideoDepacketizer.c | 5 +++--
  1 file changed, 3 insertions(+), 2 deletions(-)
 
 diff --git a/src/VideoDepacketizer.c b/src/VideoDepacketizer.c
-index b5321c1..a022f5a 100644
+index 43f2df9..5baa1d5 100644
 --- a/src/VideoDepacketizer.c
 +++ b/src/VideoDepacketizer.c
-@@ -101,9 +101,10 @@ static void dropFrameState(void) {
+@@ -103,9 +103,10 @@ static void dropFrameState(void) {
      // We're dropping frame state now
      dropStatePending = false;
  
