@@ -292,6 +292,11 @@ public class GameMenu implements Game.GameMenuCallbacks {
 
         options.add(new MenuOption(getString(R.string.game_menu_quit_session), game::quit));
 
+        // Artemide TV: test several settings against what is running and rank them
+        if (BuildConfig.TV_BUILD && dialogScreenContext == game && !com.limelight.tv.TvAutoTune.isRunning()) {
+            options.add(new MenuOption(getString(R.string.game_menu_auto_tune), game::startAutoTune));
+        }
+
         options.add(new MenuOption(getString(R.string.game_menu_upload_clipboard), true,
                 () -> game.sendClipboard(true)));
 

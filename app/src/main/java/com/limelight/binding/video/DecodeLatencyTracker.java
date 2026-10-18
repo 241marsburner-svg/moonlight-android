@@ -53,6 +53,7 @@ public final class DecodeLatencyTracker {
         if (decUs >= 0 && decUs < 1_000_000L) {
             stats.decoderTimeMs += decUs;
             stats.decoderSamples++;
+            TvDiagnostics.onDecodeTime(decUs);
         }
 
         // Keep end-to-end latency behavior when render-time is not used.

@@ -1255,6 +1255,22 @@ public class StreamSettings extends AppCompatActivity {
                 });
             }
 
+            // Artemide TV: auto-tune results (the auto-tune itself starts from the stream menu)
+            final Preference autoTune = findPreference("pref_tv_auto_tune");
+            if (autoTune != null) {
+                if (!BuildConfig.TV_BUILD) {
+                    autoTune.setVisible(false);
+                } else {
+                    autoTune.setOnPreferenceClickListener(preference -> {
+                        final Activity a = getActivity();
+                        if (a != null) {
+                            startActivity(new Intent(a, com.limelight.tv.TvAutoTuneActivity.class));
+                        }
+                        return true;
+                    });
+                }
+            }
+
             // Artemide TV: one tap to the settings that work best on this TV
             final Preference recommended = findPreference("pref_tv_apply_recommended");
             if (recommended != null) {

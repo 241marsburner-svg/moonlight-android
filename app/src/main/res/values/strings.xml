@@ -385,7 +385,13 @@
     <string name="title_mtk_extra_decoder_keys">MediaTek extra decoder keys (experimental)</string>
     <string name="summary_mtk_extra_decoder_keys">Also send MediaTek\'s vendor speed keys and an operating rate. Off uses the set measured as fastest on TCL TVs with this chip; turn on only to compare the decode time in the stream report.</string>
     <string name="title_tv_stream_report">Stream report after each stream</string>
-    <string name="summary_tv_stream_report">After a stream, show what reached the screen, network pauses, decoder and audio figures. Measured with nothing drawn over the video, unlike the performance overlay.</string>
+    <string name="summary_tv_stream_report">After a stream, show what reached the screen, network pauses, decoder and audio figures. Measured with nothing drawn over the video, unlike the performance overlay. Off: the app collects no stream statistics at all.</string>
+    <string name="game_menu_auto_tune">Auto-tune: find the best settings (about 9 min)</string>
+    <string name="title_tv_auto_tune">Auto-tune</string>
+    <string name="button_tv_auto_tune_start">Start</string>
+    <string name="message_tv_auto_tune_start">The app now runs about 9 short test streams (about a minute each) with different resolutions, frame rates, bitrates and pacing, and scores each one for picture, smoothness and latency. Keep what is running on the PC running and moving: a game, or the stream test page (stream-test.html from the download page) in full screen. Don\'t use the controller until it is done. At the end you can use the best settings or pick one yourself; nothing changes before that.</string>
+    <string name="title_tv_auto_tune_settings">Auto-tune (find the best settings)</string>
+    <string name="summary_tv_auto_tune_settings">Start a stream, open the stream menu and choose Auto-tune. It tests about 9 settings and scores each for picture, smoothness and latency. Tap here to see the last results.</string>
     <string name="title_tv_apply_recommended">Use the recommended TV settings</string>
     <string name="summary_tv_apply_recommended">One tap to what works best on this TV: 1440p, 60 FPS, HEVC, a bitrate that fits your connection, TV game pacing, nothing drawn over the video. Audio stays as it is.</string>
     <string name="title_tv_latency_test">Latency test (button to screen)</string>

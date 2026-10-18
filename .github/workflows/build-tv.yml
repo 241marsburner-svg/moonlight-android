@@ -124,6 +124,7 @@ jobs:
           cp "$(ls $OUT/*arm64-v8a*.apk | head -n1)" dist/ArtemideTV-arm64-v8a.apk
           cp "$(ls $OUT/*armeabi-v7a*.apk | head -n1)" dist/ArtemideTV-armeabi-v7a.apk
           cp tv-tools/latency-test.html dist/latency-test.html
+          cp tv-tools/stream-test.html dist/stream-test.html
           ls -la dist
 
       - name: Upload APKs as workflow artifact
@@ -142,6 +143,7 @@ jobs:
           files: |
             dist/*.apk
             dist/latency-test.html
+            dist/stream-test.html
           body: |
             Artemide TV for TCL C7K (MediaTek Pentonic 700 / MT5896), built from ${{ github.sha }}.
 
@@ -153,3 +155,6 @@ jobs:
             latency-test.html is for the PC: with Settings > Latency test on, open it full screen in
             the stream and press A, B, X or Y about 20 times; the stream report shows button-to-screen
             latency.
+
+            stream-test.html is for the PC: a steady moving picture for the auto-tune (stream menu >
+            Auto-tune), so every test sees the same load. Open it full screen before starting.

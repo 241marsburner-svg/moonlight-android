@@ -684,6 +684,9 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
         // Artemide TV: per-session diagnostics, pacer cadence and decoder hint policy
         TvDiagnostics.resetVideo();
+        // Stream statistics only when something uses them (report, overlay, latency test, auto-tune)
+        TvDiagnostics.setCollecting(prefs == null || prefs.tvStreamReport || prefs.tvLatencyTest ||
+                prefs.enablePerfOverlay || com.limelight.tv.TvAutoTune.isRunning());
         tvPacer.setStreamFps((prefs != null && prefs.fps > 0) ? prefs.fps : 60f);
         MediaCodecHelper.setMtkFullSpeedHints(prefs != null && prefs.mtkFullSpeedHints);
         MediaCodecHelper.setMtkExtraKeys(prefs != null && prefs.mtkExtraDecoderKeys);
@@ -1071,6 +1074,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             videoDecoder.setOnFrameRenderedListener(
                     (codec, presentationTimeUs, nanoTime) -> {
                         TvDiagnostics.onFrameDisplayed(nanoTime);
+                        TvDiagnostics.onFrameOnScreen(presentationTimeUs, nanoTime);
                         tvPacer.onFrameRendered(presentationTimeUs, nanoTime);
                         com.limelight.tv.TvLatencyTest.onFrameDisplayed(presentationTimeUs, nanoTime);
                     },
@@ -2379,6 +2383,10 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     }
 
     private int readFramePacingModeOverlayFirst() {
+        // Auto-tune test stream: the test's pacing (already in prefs), not the saved setting
+        if (BuildConfig.TV_BUILD && prefs != null && com.limelight.tv.TvAutoTune.isStepActive()) {
+            return prefs.framePacing;
+        }
         return mapFramePacingNameToMode(readFramePacingNameOverlayFirst());
     }
     private boolean readBooleanOverlayFirst(String key, boolean def) {
@@ -3304,6 +3312,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
         // Artemide TV latency test (no-op while off): finds the PC's reaction frame by its size
         com.limelight.tv.TvLatencyTest.onFrameReceived(decodeUnitLength, timestampUs);
+        TvDiagnostics.onFrameBytes(decodeUnitLength);
 
         numFramesIn++;
 

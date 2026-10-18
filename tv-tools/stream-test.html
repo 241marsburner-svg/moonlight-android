@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Artemide TV stream test</title>
+<!--
+  Artemide TV: steady moving picture for the auto-tune (and for judging a stream by eye).
+  Every frame moves a busy tile pattern, so the PC's encoder works about as hard as in a game and
+  every test of the auto-tune sees the same picture. The ladder lights one cell per frame: a
+  skipped cell on the TV is a dropped frame, a cell lit twice a repeated one.
+  Idea from moonlight-tcl's tools/framerate-test.html (pabragin/moonlight-tcl, GPLv3).
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: none; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #help { position: fixed; left: 16px; bottom: 12px; color: #9aa; font: 15px system-ui, "Segoe UI", sans-serif;
+          background: rgba(0,0,0,.6); padding: 6px 10px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="help">F or click: full screen · L: lighter picture · Space: pause · this text hides after 10 s</div>
+<script>
+(function () {
+  var canvas = document.getElementById('c');
+  var ctx = canvas.getContext('2d', { alpha: false });
+  var help = document.getElementById('help');
+  var frame = 0, paused = false, light = false, last = performance.now(), fps = 0, count = 0, since = last;
+
+  function resize() {
+    var dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(innerWidth * dpr);
+    canvas.height = Math.round(innerHeight * dpr);
+  }
+  addEventListener('resize', resize);
+  resize();
+  setTimeout(function () { help.style.display = 'none'; }, 10000);
+
+  function fullscreen() {
+    if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen().catch(function () {});
+    }
+  }
+  addEventListener('click', fullscreen);
+  addEventListener('keydown', function (e) {
+    if (e.key === 'f' || e.key === 'F') fullscreen();
+    if (e.key === 'l' || e.key === 'L') light = !light;
+    if (e.key === ' ') paused = !paused;
+  });
+
+  // 32-bit integer hash: an even mix of colours everywhere on the screen
+  function hash(a, b, c) {
+    var h = (Math.imul(a, 374761393) + Math.imul(b, 668265263) + Math.imul(c, 362437)) | 0;
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return (h ^ (h >>> 16)) >>> 0;
+  }
+
+  function draw(now) {
+    requestAnimationFrame(draw);
+    if (paused) return;
+    frame++;
+    count++;
+    if (now - since >= 1000) { fps = count * 1000 / (now - since); count = 0; since = now; }
+    last = now;
+
+    var W = canvas.width, H = canvas.height, s = W / 1920;
+    // Busy moving texture (game-like encoder load): tiles drift diagonally, colours shift
+    var cell = Math.max(16, Math.round((light ? 64 : 28) * s));
+    var off = (frame * 5) % cell;
+    for (var y = -cell; y < H; y += cell) {
+      for (var x = -cell; x < W; x += cell) {
+        var v = hash((x / cell) | 0, (y / cell) | 0, frame >> 2);
+        ctx.fillStyle = 'hsl(' + (v % 360) + ',65%,' + (25 + (v >>> 9) % 35) + '%)';
+        ctx.fillRect(x + off, y + off, cell - 1, cell - 1);
+      }
+    }
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.fillRect(0, 0, W, H);
+
+    // Ladder: one cell per frame
+    var cells = 60, cw = W / cells;
+    for (var i = 0; i < cells; i++) {
+      ctx.fillStyle = i === frame % cells ? '#fff' : '#222';
+      ctx.fillRect(i * cw + 2 * s, H * 0.44, cw - 4 * s, H * 0.12);
+    }
+    // Bar moving a fixed step per frame: smooth when every frame arrives
+    var bw = 80 * s, bx = (frame * 14 * s) % (W + bw) - bw;
+    ctx.fillStyle = '#4af';
+    ctx.fillRect(bx, H * 0.64, bw, H * 0.12);
+    // Counter and the browser's own frame rate (if this is below the stream rate, the PC is the limit)
+    ctx.fillStyle = '#fff';
+    ctx.textBaseline = 'top';
+    ctx.font = Math.round(120 * s) + 'px system-ui, sans-serif';
+    ctx.fillText(String(frame % 1000).padStart(3, '0'), 40 * s, 40 * s);
+    ctx.font = Math.round(40 * s) + 'px system-ui, sans-serif';
+    ctx.fillText(fps.toFixed(1) + ' fps on the PC', 40 * s, 190 * s);
+  }
+  requestAnimationFrame(draw);
+})();
+</script>
+</body>
+</html>

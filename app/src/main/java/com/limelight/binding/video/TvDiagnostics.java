@@ -80,6 +80,111 @@ public final class TvDiagnostics {
     private static long snapPresentSamples, snapPresentOffsetSum, snapPresentSlips;
     private static int snapUnderruns;
 
+    // --- Collection switch ---
+    // Off: every per-frame hook returns at once (no counters, no clock reads). The cost when on
+    // is a few atomic counters and clock reads per frame, well under 0.1 % of one core.
+    private static volatile boolean collecting = true;
+
+    public static void setCollecting(boolean on) {
+        collecting = on;
+    }
+
+    public static boolean isCollecting() {
+        return collecting;
+    }
+
+    // --- Per-frame figures for the auto-tune (session counters; windows are differences) ---
+    private static final AtomicLong frameBytes = new AtomicLong();
+    private static final AtomicLong decodeSumUs = new AtomicLong();
+    private static final AtomicLong decodeSamples = new AtomicLong();
+    private static final AtomicLong screenSumUs = new AtomicLong();
+    private static final AtomicLong screenSamples = new AtomicLong();
+    // Longest values since beginWindow() (the session maxima above stay untouched)
+    private static volatile long windowMaxDisplayIntervalNs;
+    private static volatile long windowMaxNetGapMs;
+    private static volatile long windowMaxScreenUs;
+
+    /** Picture data of one frame went to the decoder. */
+    public static void onFrameBytes(int bytes) {
+        if (collecting && bytes > 0) {
+            frameBytes.addAndGet(bytes);
+        }
+    }
+
+    /** Decoder time of one frame (queued to output ready). */
+    public static void onDecodeTime(long decodeUs) {
+        if (collecting && decodeUs >= 0 && decodeUs < 1_000_000L) {
+            decodeSumUs.addAndGet(decodeUs);
+            decodeSamples.incrementAndGet();
+        }
+    }
+
+    /**
+     * A frame reached the screen: ptsUs is its arrival time (CLOCK_MONOTONIC microseconds, see
+     * callbacks.c), renderNs when the display showed it. The difference is everything the TV adds:
+     * decoding, the pacing buffer and the compositor.
+     */
+    static void onFrameOnScreen(long ptsUs, long renderNs) {
+        if (!collecting || ptsUs <= 0) {
+            return;
+        }
+        final long us = renderNs / 1000L - ptsUs;
+        if (us > 0 && us < 1_000_000L) {
+            screenSumUs.addAndGet(us);
+            screenSamples.incrementAndGet();
+            if (us > windowMaxScreenUs) {
+                windowMaxScreenUs = us;
+            }
+        }
+    }
+
+    /** Cumulative counters at one moment; two of them give the figures for the time between. */
+    public static final class Sample {
+        public long atNs;
+        public long released, displayed, displayGaps, netGaps, framesLost, lossEvents;
+        public long bytes, decodeSumUs, decodeSamples, screenSumUs, screenSamples;
+        public long rttSumMs, rttSamples, leadSumNs, leadSamples, presentSamples, presentSlips;
+        public long unplannedDrops, keyframeRequests, audioGaps, inputWaits;
+        public long maxDisplayIntervalNs, maxNetGapMs, maxScreenUs; // since beginWindow()
+    }
+
+    public static Sample sample() {
+        final Sample s = new Sample();
+        s.atNs = System.nanoTime();
+        s.released = framesReleased.get();
+        s.displayed = framesDisplayed.get();
+        s.displayGaps = displayGaps.get();
+        s.netGaps = videoNetGaps.get();
+        s.framesLost = framesLostTotal.get();
+        s.lossEvents = frameLossEvents.get();
+        s.bytes = frameBytes.get();
+        s.decodeSumUs = decodeSumUs.get();
+        s.decodeSamples = decodeSamples.get();
+        s.screenSumUs = screenSumUs.get();
+        s.screenSamples = screenSamples.get();
+        s.rttSumMs = rttSumMs.get();
+        s.rttSamples = rttSamples.get();
+        s.leadSumNs = leadSumNs.get();
+        s.leadSamples = leadSamples.get();
+        s.presentSamples = presentSamples.get();
+        s.presentSlips = presentSlips.get();
+        s.unplannedDrops = unplannedDrops.get();
+        s.keyframeRequests = keyframeRequests.get();
+        s.audioGaps = audioArrivalGaps.get();
+        s.inputWaits = inputWaits.get();
+        s.maxDisplayIntervalNs = windowMaxDisplayIntervalNs;
+        s.maxNetGapMs = windowMaxNetGapMs;
+        s.maxScreenUs = windowMaxScreenUs;
+        return s;
+    }
+
+    /** Starts a measuring window: the window maxima start from zero. */
+    public static void beginWindow() {
+        windowMaxDisplayIntervalNs = 0;
+        windowMaxNetGapMs = 0;
+        windowMaxScreenUs = 0;
+    }
+
     // --- Network loss and round trip (session, for the stream report) ---
     private static final AtomicLong framesLostTotal = new AtomicLong();
     private static final AtomicLong frameLossEvents = new AtomicLong();
@@ -90,7 +195,7 @@ public final class TvDiagnostics {
 
     /** Frames that never arrived complete (network loss FEC could not repair). */
     public static void onFramesLost(int frames) {
-        if (frames > 0) {
+        if (collecting && frames > 0) {
             framesLostTotal.addAndGet(frames);
             frameLossEvents.incrementAndGet();
         }
@@ -98,7 +203,7 @@ public final class TvDiagnostics {
 
     /** @param rttInfo MoonBridge.getEstimatedRttInfo(): rtt << 32 | variance, -1 = unknown */
     public static void addRttSample(long rttInfo) {
-        if (rttInfo < 0) {
+        if (!collecting || rttInfo < 0) {
             return;
         }
         final int rtt = (int) (rttInfo >> 32);
@@ -131,6 +236,14 @@ public final class TvDiagnostics {
         adpfState = "off";
         framesLostTotal.set(0);
         frameLossEvents.set(0);
+        frameBytes.set(0);
+        decodeSumUs.set(0);
+        decodeSamples.set(0);
+        screenSumUs.set(0);
+        screenSamples.set(0);
+        windowMaxDisplayIntervalNs = 0;
+        windowMaxNetGapMs = 0;
+        windowMaxScreenUs = 0;
         rttSumMs.set(0);
         rttSamples.set(0);
         maxRttMs = 0;
@@ -193,6 +306,9 @@ public final class TvDiagnostics {
     private static volatile long releaseIntervalEmaNs;
 
     static void onFrameReleased() {
+        if (!collecting) {
+            return;
+        }
         framesReleased.incrementAndGet();
         final long now = System.nanoTime();
         final long last = lastReleaseNs;
@@ -241,6 +357,9 @@ public final class TvDiagnostics {
 
     /** Video decoder thread: one complete frame came out of the network stack. */
     public static void onVideoFrameArrived(long receiveTimeMs) {
+        if (!collecting) {
+            return;
+        }
         final long nowMs = System.nanoTime() / 1_000_000L;
         videoArrivals.incrementAndGet();
         final long inApp = nowMs - receiveTimeMs;
@@ -277,6 +396,9 @@ public final class TvDiagnostics {
                 if (d > maxVideoNetGapMs) {
                     maxVideoNetGapMs = d;
                 }
+                if (d > windowMaxNetGapMs) {
+                    windowMaxNetGapMs = d;
+                }
             }
         }
     }
@@ -287,6 +409,9 @@ public final class TvDiagnostics {
     }
 
     public static void onSubmitDone(long durationNs) {
+        if (!collecting) {
+            return;
+        }
         if (durationNs > maxSubmitNs) {
             maxSubmitNs = durationNs;
         }
@@ -306,6 +431,9 @@ public final class TvDiagnostics {
 
     /** Audio decoder thread: one decoded audio packet (normally 5 ms) is ready to play. */
     public static void onAudioPacketArrived() {
+        if (!collecting) {
+            return;
+        }
         final long now = System.nanoTime();
         final long last = lastAudioArrivalNs;
         lastAudioArrivalNs = now;
@@ -333,6 +461,9 @@ public final class TvDiagnostics {
 
     /** Called from MediaCodec.OnFrameRenderedListener with the real display time. */
     static void onFrameDisplayed(long renderNs) {
+        if (!collecting) {
+            return;
+        }
         framesDisplayed.incrementAndGet();
         final long last = lastDisplayNs;
         lastDisplayNs = renderNs;
@@ -340,17 +471,25 @@ public final class TvDiagnostics {
             final long interval = renderNs - last;
             // A gap is a refresh where the previous frame had to stay on screen longer than
             // expected. Ignore long pauses (menus, static desktop) above 250 ms.
-            final long period = Math.max(expectedFramePeriodNs, releaseIntervalEmaNs);
+            // (Never shorter than a refresh: a 90 fps stream on a 60 Hz screen is shown every
+            // refresh, and that is not a hitch)
+            final long period = Math.max(Math.max(expectedFramePeriodNs, releaseIntervalEmaNs), vsyncPeriodNs);
             if (interval > (period * 3) / 2 && interval < 250_000_000L) {
                 displayGaps.incrementAndGet();
                 if (interval > maxDisplayIntervalNs) {
                     maxDisplayIntervalNs = interval;
+                }
+                if (interval > windowMaxDisplayIntervalNs) {
+                    windowMaxDisplayIntervalNs = interval;
                 }
             }
         }
     }
 
     static void onFrameScheduled(long leadNs, boolean late, boolean trimmed, boolean capped) {
+        if (!collecting) {
+            return;
+        }
         if (leadNs < 0) {
             leadNs = 0;
         }
@@ -386,6 +525,9 @@ public final class TvDiagnostics {
      * more than half a refresh later than usual is a "slip": it missed the refresh it was planned for.
      */
     static void onPresentOffset(long offsetNs, long periodNs) {
+        if (!collecting) {
+            return;
+        }
         presentSamples.incrementAndGet();
         presentOffsetSumNs.addAndGet(offsetNs);
         long baseline = presentBaselineNs;
@@ -427,6 +569,9 @@ public final class TvDiagnostics {
     }
 
     static void onInputWait(long waitedNs) {
+        if (!collecting) {
+            return;
+        }
         inputWaits.incrementAndGet();
         if (waitedNs > maxInputWaitNs) {
             maxInputWaitNs = waitedNs;

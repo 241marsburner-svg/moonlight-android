@@ -451,6 +451,81 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         }
     };
 
+    // ---- Artemide TV auto-tune: measuring window of a test stream ----
+    private final Runnable tuneWindowStart = () -> {
+        if (connected && com.limelight.tv.TvAutoTune.isStepActive()) {
+            com.limelight.binding.video.TvDiagnostics.beginWindow();
+            com.limelight.tv.TvAutoTune.onWindowStart(com.limelight.binding.video.TvDiagnostics.sample(), audioRtpStatsOrNull());
+        }
+    };
+
+    private final Runnable tuneStepEnd = () -> {
+        if (!com.limelight.tv.TvAutoTune.isStepActive()) {
+            return;
+        }
+        String report = null;
+        try {
+            final String stream = prefConfig.width + "x" + prefConfig.height + " " + Math.round(prefConfig.fps) +
+                    " fps " + (prefConfig.bitrate / 1000) + " Mbps";
+            report = com.limelight.binding.video.TvDiagnostics.buildSessionReport(this, prefConfig, stream,
+                    decoderRenderer != null ? decoderRenderer.getAverageDecoderLatency() : -1, false);
+        } catch (Throwable t) {
+            LimeLog.warning("Artemide TV auto-tune: report failed: " + t);
+        }
+        float hz = 60f;
+        try {
+            hz = getWindowManager().getDefaultDisplay().getRefreshRate();
+        } catch (Throwable ignored) { }
+        com.limelight.tv.TvAutoTune.onWindowEnd(this, com.limelight.binding.video.TvDiagnostics.sample(),
+                audioRtpStatsOrNull(), hz, report);
+        disconnect();
+    };
+
+    private final Runnable tuneConnectTimeout = () -> {
+        if (!connected && com.limelight.tv.TvAutoTune.isStepActive()) {
+            com.limelight.tv.TvAutoTune.onStepFailed(this, "no picture within " +
+                    (com.limelight.tv.TvAutoTune.CONNECT_TIMEOUT_MS / 1000) + " s");
+            finish();
+        }
+    };
+
+    private static int[] audioRtpStatsOrNull() {
+        try {
+            return MoonBridge.getAudioRtpStats();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** Auto-tune: a failed test stream ends quietly (no dialog) and the next test follows. */
+    private boolean tuneFailQuietly(String why) {
+        if (BuildConfig.TV_BUILD && com.limelight.tv.TvAutoTune.isStepActive()) {
+            com.limelight.tv.TvAutoTune.onStepFailed(this, why);
+            finish();
+            return true;
+        }
+        return false;
+    }
+
+    /** In-stream menu: start the auto-tune (several short test streams, then a ranking). */
+    public void startAutoTune() {
+        if (!BuildConfig.TV_BUILD) {
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.title_tv_auto_tune)
+                .setMessage(R.string.message_tv_auto_tune_start)
+                .setPositiveButton(R.string.button_tv_auto_tune_start, (d, w) -> {
+                    final Intent tune = new Intent(this, com.limelight.tv.TvAutoTuneActivity.class);
+                    tune.putExtra(com.limelight.tv.TvAutoTuneActivity.EXTRA_GAME_INTENT, new Intent(getIntent()));
+                    com.limelight.tv.TvAutoTune.begin(this, getIntent());
+                    startActivity(tune);
+                    finish();
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
     private final Runnable backgroundPing = () -> {
         if (connected) {
             // Artemide TV: twice as often, to keep the TV's Wi-Fi from dozing between frames
@@ -475,6 +550,12 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         // Read the stream preferences
         prefConfig = PreferenceConfiguration.readPreferences(this);
         tombstonePrefs = Game.this.getSharedPreferences("DecoderTombstone", 0);
+
+        // Artemide TV auto-tune: a test stream runs with the test's settings (nothing is saved)
+        if (BuildConfig.TV_BUILD && com.limelight.tv.TvAutoTune.isStepActive()) {
+            com.limelight.tv.TvAutoTune.applyStepOverrides(prefConfig);
+            timerHandler.postDelayed(tuneConnectTimeout, com.limelight.tv.TvAutoTune.CONNECT_TIMEOUT_MS);
+        }
 
         if (prefConfig.fullScreen) {
             // Full-screen
@@ -1937,6 +2018,12 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     protected void onDestroy() {
         super.onDestroy();
 
+        if (timerHandler != null) {
+            timerHandler.removeCallbacks(tuneWindowStart);
+            timerHandler.removeCallbacks(tuneStepEnd);
+            timerHandler.removeCallbacks(tuneConnectTimeout);
+        }
+
         instance = null;
         if (compositorHeartbeat != null) {
             compositorHeartbeat.stop();
@@ -2085,7 +2172,8 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
             // Artemide TV: save the stream report; the next app screen shows it
             com.limelight.tv.TvLatencyTest.end();
-            if (BuildConfig.TV_BUILD && (prefConfig.tvStreamReport || prefConfig.tvLatencyTest)) {
+            if (BuildConfig.TV_BUILD && (prefConfig.tvStreamReport || prefConfig.tvLatencyTest) &&
+                    !com.limelight.tv.TvAutoTune.isRunning()) {
                 try {
                     final String stream = prefConfig.width + "x" + prefConfig.height + " " +
                             Math.round(prefConfig.fps) + " fps" + selectedVideoFormat + " " +
@@ -3798,6 +3886,9 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                         dialogText += "\n\n" + getResources().getString(R.string.nettest_text_blocked);
                     }
 
+                    if (tuneFailQuietly(stage + " failed (error " + errorCode + ")")) {
+                        return;
+                    }
                     Dialog.displayDialog(Game.this, getResources().getString(R.string.conn_error_title), dialogText, true);
                     finishSecondScreen();
                 }
@@ -3909,6 +4000,9 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                                     MoonBridge.stringifyPortFlags(portFlags, "\n");
                         }
 
+                        if (tuneFailQuietly("stream ended: " + message.split("\n")[0])) {
+                            return;
+                        }
                         Dialog.displayDialog(Game.this, getResources().getString(R.string.conn_terminated_title),
                                 message, true);
                     }
@@ -3962,6 +4056,13 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
                 connected = true;
                 connecting = false;
+                // Artemide TV auto-tune: warm-up, then the measured window, then the next test
+                if (BuildConfig.TV_BUILD && com.limelight.tv.TvAutoTune.isStepActive()) {
+                    timerHandler.removeCallbacks(tuneConnectTimeout);
+                    timerHandler.postDelayed(tuneWindowStart, com.limelight.tv.TvAutoTune.WARMUP_MS);
+                    timerHandler.postDelayed(tuneStepEnd,
+                            com.limelight.tv.TvAutoTune.WARMUP_MS + com.limelight.tv.TvAutoTune.MEASURE_MS);
+                }
                 updatePipAutoEnter();
                 // Ensure frame-rate hint is applied when streaming starts (some devices need a re-apply)
                 applySurfaceFrameRateHintIfPossible();

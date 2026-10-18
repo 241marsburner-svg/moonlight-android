@@ -7,12 +7,17 @@
     <PreferenceCategory
         android:key="category_video_settings"
         android:title="@string/category_video_settings"
-        app:initialExpandedChildrenCount="4"
+        app:initialExpandedChildrenCount="5"
         app:iconSpaceReserved="false">
         <Preference
             android:key="pref_tv_apply_recommended"
             android:summary="@string/summary_tv_apply_recommended"
             android:title="@string/title_tv_apply_recommended"
+            app:iconSpaceReserved="false" />
+        <Preference
+            android:key="pref_tv_auto_tune"
+            android:summary="@string/summary_tv_auto_tune_settings"
+            android:title="@string/title_tv_auto_tune_settings"
             app:iconSpaceReserved="false" />
         <ListPreference
             android:defaultValue="1280x720"

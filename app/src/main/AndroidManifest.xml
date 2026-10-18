@@ -240,6 +240,13 @@
         <activity android:name=".DebugInfoActivity"
             android:launchMode="singleTask"/>
 
+        <!-- Artemide TV: auto-tune (runs test streams one after another, then ranks them) -->
+        <activity
+            android:name=".tv.TvAutoTuneActivity"
+            android:exported="false"
+            android:configChanges="mcc|mnc|touchscreen|keyboard|keyboardHidden|navigation|screenLayout|fontScale|uiMode|orientation|screenSize|smallestScreenSize|layoutDirection"
+            android:screenOrientation="landscape" />
+
         <!-- 无障碍 实体键盘 屏蔽某些快捷键 -->
         <service
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
