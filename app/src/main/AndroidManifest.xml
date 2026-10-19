@@ -8,6 +8,23 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- Artemide TV: end other apps' background processes before a stream (TV has 2.4 GB of RAM) -->
+    <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES" />
+    <!-- ... which needs to see the apps that have a launcher entry -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
+    </queries>
     <uses-permission android:name="com.android.providers.tv.permission.READ_EPG_DATA"/>
     <uses-permission android:name="com.android.providers.tv.permission.WRITE_EPG_DATA"/>
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />

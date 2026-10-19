@@ -223,6 +223,35 @@ public final class TvDiagnostics {
     private static long gcCountAtStart = -1, gcTimeAtStart, blockingGcCountAtStart, blockingGcTimeAtStart;
     private static volatile String adpfState = "off";
 
+    // TV memory at stream start and the thermal state (0 none ... 3 severe, see PowerManager)
+    private static volatile String memoryInfo = "";
+    private static volatile int thermalNow = -1;
+    private static volatile int thermalMax = -1;
+
+    public static void setMemoryInfo(String info) {
+        memoryInfo = info != null ? info : "";
+    }
+
+    public static void onThermalStatus(int status) {
+        thermalNow = status;
+        if (status > thermalMax) {
+            thermalMax = status;
+        }
+    }
+
+    private static String thermalName(int s) {
+        switch (s) {
+            case 0: return "normal";
+            case 1: return "warm";
+            case 2: return "hot (may slow down)";
+            case 3: return "very hot (slowing down)";
+            case 4: return "critical";
+            case 5: return "emergency";
+            case 6: return "shutting down";
+            default: return "?";
+        }
+    }
+
     public static void setAdpfState(String state) {
         adpfState = (state != null) ? state : "?";
     }
@@ -234,6 +263,7 @@ public final class TvDiagnostics {
         blockingGcCountAtStart = gcStat("art.gc.blocking-gc-count");
         blockingGcTimeAtStart = gcStat("art.gc.blocking-gc-time");
         adpfState = "off";
+        thermalMax = thermalNow;
         framesLostTotal.set(0);
         frameLossEvents.set(0);
         frameBytes.set(0);
@@ -888,6 +918,21 @@ public final class TvDiagnostics {
         sb.append("App: GC ").append(gc)
                 .append(" · boosted threads ").append(boostedThreads)
                 .append(" · CPU hints ").append(adpfState).append('\n');
+
+        // The TV itself: memory at the start, how hot the chip got
+        if (!memoryInfo.isEmpty() || thermalMax >= 0) {
+            sb.append("TV:");
+            if (!memoryInfo.isEmpty()) {
+                sb.append(" memory ").append(memoryInfo);
+            }
+            if (thermalMax >= 0) {
+                sb.append(memoryInfo.isEmpty() ? " " : " · ").append("temperature ").append(thermalName(thermalNow));
+                if (thermalMax > thermalNow) {
+                    sb.append(" (peak ").append(thermalName(thermalMax)).append(')');
+                }
+            }
+            sb.append('\n');
+        }
 
         // Settings that cost delay or smoothness on this TV (nothing printed when all is well)
         final String check = settingsCheck(prefs);

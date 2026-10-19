@@ -395,6 +395,10 @@
     <string name="summary_tv_auto_tune_settings">Start it from the app list (hold OK on an app, e.g. Desktop, and choose Auto-tune) or in a stream (Back on the remote opens the stream menu). It tests about 9 settings and scores each for picture, smoothness and latency. Tap here to see the last results.</string>
     <string name="title_tv_apply_recommended">Use the recommended TV settings</string>
     <string name="summary_tv_apply_recommended">One tap to what works best on this TV: 1440p, 60 FPS, HEVC, a bitrate that fits your connection, TV game pacing, nothing drawn over the video. Audio stays as it is.</string>
+    <string name="title_tv_free_memory">Free up TV memory before each stream</string>
+    <string name="summary_tv_free_memory">Ends the background processes of other apps (browser, YouTube, Netflix…) when a stream starts, so the TV\'s 2.4 GB of RAM goes to the stream. Apps you open again simply start fresh. The home screen, keyboard, Google services and the TV\'s own system parts are left alone.</string>
+    <string name="title_tv_free_memory_now">Free up TV memory now</string>
+    <string name="summary_tv_free_memory_now">Does the same right away and shows how much memory is free.</string>
     <string name="title_tv_latency_test">Latency test (button to screen)</string>
     <string name="summary_tv_latency_test">On the PC, open latency-test.html from the download page full screen in the stream and press A, B, X or Y about 20 times, holding each press briefly. The stream report then shows how long a press takes to reach the screen and where the time goes.</string>
     <string name="pacing_group_latency">Latency</string>

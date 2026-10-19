@@ -489,6 +489,41 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         }
     };
 
+    // Chip temperature state (Android 10+), for the stream report
+    private Object thermalListener;
+
+    private void startThermalWatch() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            return;
+        }
+        try {
+            final android.os.PowerManager pm = (android.os.PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm == null) {
+                return;
+            }
+            com.limelight.binding.video.TvDiagnostics.onThermalStatus(pm.getCurrentThermalStatus());
+            final android.os.PowerManager.OnThermalStatusChangedListener l =
+                    com.limelight.binding.video.TvDiagnostics::onThermalStatus;
+            pm.addThermalStatusListener(getMainExecutor(), l);
+            thermalListener = l;
+        } catch (Throwable t) {
+            LimeLog.warning("Thermal status unavailable: " + t);
+        }
+    }
+
+    private void stopThermalWatch() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || thermalListener == null) {
+            return;
+        }
+        try {
+            final android.os.PowerManager pm = (android.os.PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm != null) {
+                pm.removeThermalStatusListener((android.os.PowerManager.OnThermalStatusChangedListener) thermalListener);
+            }
+        } catch (Throwable ignored) { }
+        thermalListener = null;
+    }
+
     private static int[] audioRtpStatsOrNull() {
         try {
             return MoonBridge.getAudioRtpStats();
@@ -550,6 +585,20 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         // Read the stream preferences
         prefConfig = PreferenceConfiguration.readPreferences(this);
         tombstonePrefs = Game.this.getSharedPreferences("DecoderTombstone", 0);
+
+        // Artemide TV: make room in the TV's memory (other apps' background processes) and
+        // follow the chip's temperature for the stream report
+        if (BuildConfig.TV_BUILD) {
+            final Context appContext = getApplicationContext();
+            if (prefConfig.tvFreeMemory) {
+                new Thread(() -> com.limelight.binding.video.TvDiagnostics.setMemoryInfo(
+                        com.limelight.tv.TvMemoryCleaner.freeMemory(appContext).describe()),
+                        "TvFreeMemory").start();
+            } else {
+                com.limelight.binding.video.TvDiagnostics.setMemoryInfo("");
+            }
+            startThermalWatch();
+        }
 
         // Artemide TV auto-tune: a test stream runs with the test's settings (nothing is saved)
         if (BuildConfig.TV_BUILD && com.limelight.tv.TvAutoTune.isStepActive()) {
@@ -2017,6 +2066,8 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     @Override
     protected void onDestroy() {
         super.onDestroy();
+
+        stopThermalWatch();
 
         if (timerHandler != null) {
             timerHandler.removeCallbacks(tuneWindowStart);

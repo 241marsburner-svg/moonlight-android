@@ -70,8 +70,9 @@ public final class TvRecommendedSettings {
         e.putBoolean("checkbox_use_virtual_display", true);
         e.putBoolean("checkbox_prevent_packet_loss", true);
 
-        // Figures after each stream, measured with nothing over the video
+        // Figures after each stream, measured with nothing over the video; room in the TV's memory
         e.putBoolean("checkbox_tv_stream_report", true);
+        e.putBoolean("checkbox_tv_free_memory", true);
         e.apply();
 
         final String summary = String.format(Locale.US,

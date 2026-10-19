@@ -1255,6 +1255,38 @@ public class StreamSettings extends AppCompatActivity {
                 });
             }
 
+            // Artemide TV: free memory now (runs off the UI thread, shows the result)
+            final Preference freeMemory = findPreference("pref_tv_free_memory_now");
+            if (freeMemory != null) {
+                if (!BuildConfig.TV_BUILD) {
+                    freeMemory.setVisible(false);
+                } else {
+                    freeMemory.setOnPreferenceClickListener(preference -> {
+                        final Activity a = getActivity();
+                        if (a == null) {
+                            return true;
+                        }
+                        Toast.makeText(a, "Freeing memory…", Toast.LENGTH_SHORT).show();
+                        final Context appContext = a.getApplicationContext();
+                        new Thread(() -> {
+                            final com.limelight.tv.TvMemoryCleaner.Result r =
+                                    com.limelight.tv.TvMemoryCleaner.freeMemory(appContext);
+                            a.runOnUiThread(() -> {
+                                if (a.isFinishing()) {
+                                    return;
+                                }
+                                new android.app.AlertDialog.Builder(a)
+                                        .setTitle(R.string.title_tv_free_memory_now)
+                                        .setMessage("TV memory: " + r.describe())
+                                        .setPositiveButton(android.R.string.ok, null)
+                                        .show();
+                            });
+                        }, "TvFreeMemory").start();
+                        return true;
+                    });
+                }
+            }
+
             // Artemide TV: auto-tune results (the auto-tune itself starts from the stream menu)
             final Preference autoTune = findPreference("pref_tv_auto_tune");
             if (autoTune != null) {

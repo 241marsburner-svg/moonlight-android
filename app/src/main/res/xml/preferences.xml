@@ -273,6 +273,19 @@
             app:iconSpaceReserved="false" />
 
         <CheckBoxPreference
+            android:defaultValue="true"
+            android:key="checkbox_tv_free_memory"
+            android:summary="@string/summary_tv_free_memory"
+            android:title="@string/title_tv_free_memory"
+            app:iconSpaceReserved="false" />
+
+        <Preference
+            android:key="pref_tv_free_memory_now"
+            android:summary="@string/summary_tv_free_memory_now"
+            android:title="@string/title_tv_free_memory_now"
+            app:iconSpaceReserved="false" />
+
+        <CheckBoxPreference
             android:defaultValue="false"
             android:key="checkbox_tv_latency_test"
             android:summary="@string/summary_tv_latency_test"
