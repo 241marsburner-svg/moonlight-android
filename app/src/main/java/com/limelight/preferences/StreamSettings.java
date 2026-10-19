@@ -1303,6 +1303,37 @@ public class StreamSettings extends AppCompatActivity {
                 }
             }
 
+            // Artemide TV: updates from GitHub and the log upload
+            final Preference tvApp = findPreference("category_tv_app");
+            if (tvApp != null && !BuildConfig.TV_BUILD) {
+                tvApp.setVisible(false);
+            }
+            final Preference checkUpdate = findPreference("pref_tv_check_update");
+            if (checkUpdate != null && BuildConfig.TV_BUILD) {
+                final int build = com.limelight.tv.TvUpdater.currentBuild();
+                if (build > 0) {
+                    checkUpdate.setSummary("Installed: build " + build + ". " +
+                            getString(R.string.summary_tv_check_update));
+                }
+                checkUpdate.setOnPreferenceClickListener(preference -> {
+                    final Activity a = getActivity();
+                    if (a != null) {
+                        com.limelight.tv.TvUpdater.checkNow(a);
+                    }
+                    return true;
+                });
+            }
+            final Preference uploadLog = findPreference("pref_tv_upload_log");
+            if (uploadLog != null && BuildConfig.TV_BUILD) {
+                uploadLog.setOnPreferenceClickListener(preference -> {
+                    final Activity a = getActivity();
+                    if (a != null) {
+                        com.limelight.tv.TvLogUpload.showDialog(a, "settings");
+                    }
+                    return true;
+                });
+            }
+
             // Artemide TV: one tap to the settings that work best on this TV
             final Preference recommended = findPreference("pref_tv_apply_recommended");
             if (recommended != null) {

@@ -376,6 +376,8 @@ public class PcView extends AppCompatActivity implements AdapterFragmentCallback
 
         // Artemide TV: the report of the stream that just ended
         com.limelight.tv.TvStreamReport.showIfPending(this);
+        // Artemide TV: a newer build on GitHub? (at most every 6 hours, asks before downloading)
+        com.limelight.tv.TvUpdater.checkOnStart(this);
 
         refreshProfileButton();
 

@@ -133,6 +133,37 @@ jobs:
           name: ArtemideTV-build-${{ github.run_number }}
           path: dist/*.apk
 
+      # The release text: what changed (the commit message, shown by the app's updater above
+      # the "---" line), then how to install
+      - name: Write release notes
+        env:
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          {
+            echo "What's new in build ${{ github.run_number }}:"
+            echo
+            git log -1 --format=%B | grep -v -E "^(Co-Authored-By|Claude-Session|Signed-off-by):" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'
+            echo
+            echo "---"
+            echo "Artemide TV for TCL C7K (MediaTek Pentonic 700 / MT5896), built from ${SHA}."
+            echo
+            echo "Update from inside the app: Settings > Artemide TV > Check for updates (or say yes when the app offers it)."
+            echo
+            echo "First install on the TV with the Downloader app using this link (always the newest build):"
+            echo "https://github.com/${REPO}/releases/latest/download/ArtemideTV.apk"
+            echo
+            echo "ArtemideTV.apk works on any ARM TV. The per-ABI files are smaller alternatives."
+            echo
+            echo "latency-test.html is for the PC: with Settings > Latency test on, open it full screen in"
+            echo "the stream and press A, B, X or Y about 20 times; the stream report shows button-to-screen"
+            echo "latency."
+            echo
+            echo "stream-test.html is for the PC: a steady moving picture for the auto-tune (stream menu >"
+            echo "Auto-tune), so every test sees the same load. Open it full screen before starting."
+          } > release-notes.md
+          cat release-notes.md
+
       - name: Publish release (stable link for the TV)
         uses: softprops/action-gh-release@v2
         with:
@@ -144,17 +175,4 @@ jobs:
             dist/*.apk
             dist/latency-test.html
             dist/stream-test.html
-          body: |
-            Artemide TV for TCL C7K (MediaTek Pentonic 700 / MT5896), built from ${{ github.sha }}.
-
-            Install on the TV with the Downloader app using this link (always the newest build):
-            https://github.com/${{ github.repository }}/releases/latest/download/ArtemideTV.apk
-
-            ArtemideTV.apk works on any ARM TV. The per-ABI files are smaller alternatives.
-
-            latency-test.html is for the PC: with Settings > Latency test on, open it full screen in
-            the stream and press A, B, X or Y about 20 times; the stream report shows button-to-screen
-            latency.
-
-            stream-test.html is for the PC: a steady moving picture for the auto-tune (stream menu >
-            Auto-tune), so every test sees the same load. Open it full screen before starting.
+          body_path: release-notes.md

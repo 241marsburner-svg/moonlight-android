@@ -451,6 +451,52 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         }
     };
 
+    // ---- Artemide TV: one timeline line per second (stream report file, auto-tune log) ----
+    private float lastTimelineHz;
+    private final Runnable tvTimelineTick = new Runnable() {
+        @Override
+        public void run() {
+            if (!connected || !com.limelight.binding.video.TvDiagnostics.isCollecting()) {
+                return;
+            }
+            float hz = 0f;
+            try {
+                hz = getWindowManager().getDefaultDisplay().getRefreshRate();
+            } catch (Throwable ignored) { }
+            com.limelight.binding.video.TvDiagnostics.setDisplayRefreshHz(hz);
+            int rtt = -1;
+            try {
+                final long info = MoonBridge.getEstimatedRttInfo();
+                if (info >= 0) {
+                    rtt = (int) (info >> 32);
+                }
+            } catch (Throwable ignored) { }
+            String note = null;
+            if (lastTimelineHz > 0f && Math.abs(hz - lastTimelineHz) > 0.5f) {
+                note = String.format(java.util.Locale.US, "screen changed to %.2f Hz", hz);
+            }
+            lastTimelineHz = hz;
+            com.limelight.tv.TvTimeline.tick(hz, rtt, note);
+            timerHandler.postDelayed(this, 1000);
+        }
+    };
+
+    /** The codec the stream runs with, as the auto-tune names it. */
+    private String activeCodecName() {
+        if (decoderRenderer == null) {
+            return "?";
+        }
+        final int f = decoderRenderer.getActiveVideoFormat();
+        if ((f & MoonBridge.VIDEO_FORMAT_MASK_H264) != 0) {
+            return "H.264";
+        } else if ((f & MoonBridge.VIDEO_FORMAT_MASK_H265) != 0) {
+            return "HEVC";
+        } else if ((f & MoonBridge.VIDEO_FORMAT_MASK_AV1) != 0) {
+            return "AV1";
+        }
+        return "?";
+    }
+
     // ---- Artemide TV auto-tune: measuring window of a test stream ----
     private final Runnable tuneWindowStart = () -> {
         if (connected && com.limelight.tv.TvAutoTune.isStepActive()) {
@@ -466,7 +512,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         String report = null;
         try {
             final String stream = prefConfig.width + "x" + prefConfig.height + " " + Math.round(prefConfig.fps) +
-                    " fps " + (prefConfig.bitrate / 1000) + " Mbps";
+                    " fps " + activeCodecName() + " " + (prefConfig.bitrate / 1000) + " Mbps";
             report = com.limelight.binding.video.TvDiagnostics.buildSessionReport(this, prefConfig, stream,
                     decoderRenderer != null ? decoderRenderer.getAverageDecoderLatency() : -1, false);
         } catch (Throwable t) {
@@ -477,7 +523,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
             hz = getWindowManager().getDefaultDisplay().getRefreshRate();
         } catch (Throwable ignored) { }
         com.limelight.tv.TvAutoTune.onWindowEnd(this, com.limelight.binding.video.TvDiagnostics.sample(),
-                audioRtpStatsOrNull(), hz, report);
+                audioRtpStatsOrNull(), hz, report, activeCodecName());
         disconnect();
     };
 
@@ -598,6 +644,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 com.limelight.binding.video.TvDiagnostics.setMemoryInfo("");
             }
             startThermalWatch();
+            com.limelight.tv.TvTimeline.reset();
         }
 
         // Artemide TV auto-tune: a test stream runs with the test's settings (nothing is saved)
@@ -1019,6 +1066,9 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         // Set to the optimal mode for streaming
         float displayRefreshRate = prepareDisplayForRendering(currentDisplay);
         LimeLog.info("Display refresh rate: "+displayRefreshRate);
+        if (BuildConfig.TV_BUILD) {
+            com.limelight.binding.video.TvDiagnostics.setDisplayRefreshHz(displayRefreshRate);
+        }
 
         // If the user requested frame pacing using a capped FPS, we will need to change our
         // desired FPS setting here in accordance with the active display refresh rate.
@@ -2073,6 +2123,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
             timerHandler.removeCallbacks(tuneWindowStart);
             timerHandler.removeCallbacks(tuneStepEnd);
             timerHandler.removeCallbacks(tuneConnectTimeout);
+            timerHandler.removeCallbacks(tvTimelineTick);
         }
 
         instance = null;
@@ -4123,6 +4174,13 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
                 connected = true;
                 connecting = false;
+                // Artemide TV: second-by-second timeline while the statistics are collected
+                if (BuildConfig.TV_BUILD) {
+                    com.limelight.tv.TvTimeline.reset();
+                    lastTimelineHz = 0f;
+                    timerHandler.removeCallbacks(tvTimelineTick);
+                    timerHandler.postDelayed(tvTimelineTick, 1000);
+                }
                 // Artemide TV auto-tune: warm-up, then the measured window, then the next test
                 if (BuildConfig.TV_BUILD && com.limelight.tv.TvAutoTune.isStepActive()) {
                     timerHandler.removeCallbacks(tuneConnectTimeout);

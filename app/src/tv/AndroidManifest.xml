@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Artemide TV build only: merged into the main manifest for the 'tv' build type -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- In-app updates: hand the downloaded ArtemideTV.apk to the TV's package installer -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <application>
+        <!-- Result of an update installed through a PackageInstaller session (fallback path) -->
+        <receiver
+            android:name="com.limelight.tv.TvUpdateReceiver"
+            android:exported="false" />
+    </application>
+
+</manifest>

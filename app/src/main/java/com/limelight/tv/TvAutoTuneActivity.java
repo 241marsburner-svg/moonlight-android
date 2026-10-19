@@ -181,10 +181,15 @@ public class TvAutoTuneActivity extends Activity {
             final String last = TvAutoTune.lastSummary(this);
             title.setText("Auto-tune");
             status.setText(last != null
-                    ? "Last auto-tune results:"
+                    ? "Last auto-tune results. \"Upload log\" sends everything measured to the internet and shows a link to give Claude."
                     : "No results yet. Start a stream, open the stream menu and choose Auto-tune.");
             table.setText(last != null ? last : "");
-            setButtons(new String[] { "Close" }, new Runnable[] { this::finish });
+            if (last != null) {
+                setButtons(new String[] { "Details", "Upload log", "Close" },
+                        new Runnable[] { this::showSavedDetails, this::upload, this::finish });
+            } else {
+                setButtons(new String[] { "Upload log", "Close" }, new Runnable[] { this::upload, this::finish });
+            }
             return;
         }
 
@@ -208,15 +213,61 @@ public class TvAutoTuneActivity extends Activity {
         if (logLocation != null) {
             s.append("\nFull log with every measurement: ").append(logLocation);
         }
+        s.append("\nDetails shows why each test got its scores. Upload log gives you a link to send to Claude.");
         status.setText(s);
         table.setText(TvAutoTune.summaryText());
 
         if (best != null) {
-            setButtons(new String[] { "Use best", "Pick a test", "Keep my settings" },
-                    new Runnable[] { () -> use(best), this::pick, this::finish });
+            setButtons(new String[] { "Use best", "Pick a test", "Details", "Upload log", "Keep my settings" },
+                    new Runnable[] { () -> use(best), this::pick, this::showDetails, this::upload, this::finish });
         } else {
-            setButtons(new String[] { "Close" }, new Runnable[] { this::finish });
+            setButtons(new String[] { "Details", "Upload log", "Close" },
+                    new Runnable[] { this::showDetails, this::upload, this::finish });
         }
+    }
+
+    private void upload() {
+        TvLogUpload.showDialog(this, "auto-tune screen");
+    }
+
+    private void showDetails() {
+        showText("Why each test got its scores", TvAutoTune.detailsText());
+    }
+
+    /** Details of the last auto-tune, from its saved log (after the app was restarted). */
+    private void showSavedDetails() {
+        final String log = TvAutoTune.lastLog(this);
+        String text = "No details saved.";
+        if (log != null) {
+            final int a = log.indexOf("WHY EACH TEST GOT ITS SCORES\n");
+            final int b = log.indexOf("\nDETAILS\n");
+            if (a >= 0 && b > a) {
+                text = log.substring(a + "WHY EACH TEST GOT ITS SCORES\n".length(), b);
+            } else {
+                final int c = log.indexOf("DETAILS\n");
+                text = c >= 0 ? log.substring(c, Math.min(log.length(), c + 6000)) : log.substring(0, Math.min(log.length(), 6000));
+            }
+        }
+        showText("Why each test got its scores", text);
+    }
+
+    private void showText(String heading, String text) {
+        final TextView v = new TextView(this);
+        v.setText(text);
+        v.setTypeface(Typeface.MONOSPACE);
+        v.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        final int pad = dp(16);
+        v.setPadding(pad, pad / 2, pad, pad / 2);
+        final ScrollView sv = new ScrollView(this);
+        sv.addView(v);
+        // Remote: the scroll view takes focus so up/down scroll the text
+        sv.setFocusable(true);
+        new AlertDialog.Builder(this)
+                .setTitle(heading)
+                .setView(sv)
+                .setPositiveButton("Close", null)
+                .show();
+        sv.post(sv::requestFocus);
     }
 
     private void use(TvAutoTune.Result r) {

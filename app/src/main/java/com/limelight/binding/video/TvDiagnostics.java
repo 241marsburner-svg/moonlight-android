@@ -103,6 +103,30 @@ public final class TvDiagnostics {
     private static volatile long windowMaxDisplayIntervalNs;
     private static volatile long windowMaxNetGapMs;
     private static volatile long windowMaxScreenUs;
+    private static volatile long tickMaxDisplayIntervalNs;
+    private static volatile long tickMaxArrivalGapMs;
+    private static volatile long tickMaxScreenUs;
+    // Time the picture stood still beyond its normal cadence (sum over all hitches)
+    private static final AtomicLong hitchExtraNs = new AtomicLong();
+    // The screen's refresh period (fallback when the pacer has no vsync grid)
+    private static volatile long displayPeriodNs;
+    private static volatile String decoderName = "?";
+
+    /** The screen's refresh rate, from the display mode (Game, at start and once a second). */
+    public static void setDisplayRefreshHz(float hz) {
+        if (hz > 20f && hz < 1000f) {
+            displayPeriodNs = (long) (1e9 / hz);
+        }
+    }
+
+    /** The decoder that is running, e.g. "c2.mtk.hevc.decoder (video/hevc)". */
+    public static void setDecoderName(String name) {
+        decoderName = name != null ? name : "?";
+    }
+
+    public static String decoderName() {
+        return decoderName;
+    }
 
     /** Picture data of one frame went to the decoder. */
     public static void onFrameBytes(int bytes) {
@@ -135,6 +159,9 @@ public final class TvDiagnostics {
             if (us > windowMaxScreenUs) {
                 windowMaxScreenUs = us;
             }
+            if (us > tickMaxScreenUs) {
+                tickMaxScreenUs = us;
+            }
         }
     }
 
@@ -146,6 +173,9 @@ public final class TvDiagnostics {
         public long rttSumMs, rttSamples, leadSumNs, leadSamples, presentSamples, presentSlips;
         public long unplannedDrops, keyframeRequests, audioGaps, inputWaits;
         public long maxDisplayIntervalNs, maxNetGapMs, maxScreenUs; // since beginWindow()
+        public long arrivals, hitchExtraNs;
+        // Longest values since the previous tick() (timeline)
+        public long tickMaxFrameMs, tickMaxArrivalGapMs, tickMaxScreenUs;
     }
 
     public static Sample sample() {
@@ -175,6 +205,20 @@ public final class TvDiagnostics {
         s.maxDisplayIntervalNs = windowMaxDisplayIntervalNs;
         s.maxNetGapMs = windowMaxNetGapMs;
         s.maxScreenUs = windowMaxScreenUs;
+        s.arrivals = videoArrivals.get();
+        s.hitchExtraNs = hitchExtraNs.get();
+        return s;
+    }
+
+    /** sample() plus the longest values since the last tick, which start again from zero. */
+    public static Sample tick() {
+        final Sample s = sample();
+        s.tickMaxFrameMs = tickMaxDisplayIntervalNs / 1_000_000L;
+        s.tickMaxArrivalGapMs = tickMaxArrivalGapMs;
+        s.tickMaxScreenUs = tickMaxScreenUs;
+        tickMaxDisplayIntervalNs = 0;
+        tickMaxArrivalGapMs = 0;
+        tickMaxScreenUs = 0;
         return s;
     }
 
@@ -274,6 +318,10 @@ public final class TvDiagnostics {
         windowMaxDisplayIntervalNs = 0;
         windowMaxNetGapMs = 0;
         windowMaxScreenUs = 0;
+        tickMaxDisplayIntervalNs = 0;
+        tickMaxArrivalGapMs = 0;
+        tickMaxScreenUs = 0;
+        hitchExtraNs.set(0);
         rttSumMs.set(0);
         rttSamples.set(0);
         maxRttMs = 0;
@@ -408,7 +456,13 @@ public final class TvDiagnostics {
             if (d <= 2 && periodMs >= 6) {
                 videoBunched.incrementAndGet();
             }
-            if (d > (periodMs * 5) / 2 && d < 2000) {
+            if (d > tickMaxArrivalGapMs && d < 2000) {
+                tickMaxArrivalGapMs = d;
+            }
+            // A pause is a gap of 2.5 frames, but never less than 40 ms: at 90 or 120 fps,
+            // 2.5 frames is only 20-28 ms, which Wi-Fi's normal bunching reaches all the time
+            // (and such short gaps don't show on screen: the frames still make their refresh)
+            if (d > Math.max(40L, (periodMs * 5) / 2) && d < 2000) {
                 // How regular are the stalls? ~1024 ms points at Wi-Fi power saving (DTIM),
                 // ~1280 ms at Bluetooth scanning, other steady values at a timer somewhere
                 final long lastGap = lastGapAtMs;
@@ -499,12 +553,23 @@ public final class TvDiagnostics {
         lastDisplayNs = renderNs;
         if (last != 0 && renderNs > last) {
             final long interval = renderNs - last;
-            // A gap is a refresh where the previous frame had to stay on screen longer than
-            // expected. Ignore long pauses (menus, static desktop) above 250 ms.
-            // (Never shorter than a refresh: a 90 fps stream on a 60 Hz screen is shown every
-            // refresh, and that is not a hitch)
-            final long period = Math.max(Math.max(expectedFramePeriodNs, releaseIntervalEmaNs), vsyncPeriodNs);
-            if (interval > (period * 3) / 2 && interval < 250_000_000L) {
+            if (interval > tickMaxDisplayIntervalNs && interval < 1_000_000_000L) {
+                tickMaxDisplayIntervalNs = interval;
+            }
+            // A hitch is a frame that stayed on screen longer than the stream's cadence allows.
+            // The cadence is the frame time rounded up to whole refreshes: 60 fps on 60 Hz is one
+            // refresh per frame, 90 fps on 120 Hz is one or two (two is normal there, not a hitch),
+            // 90 fps on 60 Hz is one. Anything half a refresh beyond that is a hitch.
+            // Long pauses (menus, static desktop) above 250 ms are ignored.
+            final long content = Math.max(expectedFramePeriodNs, releaseIntervalEmaNs);
+            long refresh = vsyncPeriodNs > 0 ? vsyncPeriodNs : displayPeriodNs;
+            if (refresh <= 0) {
+                refresh = content;
+            }
+            final long refreshes = Math.max(1L, (content - refresh / 20 + refresh - 1) / refresh);
+            final long natural = refreshes * refresh;
+            if (interval > natural + refresh / 2 && interval < 250_000_000L) {
+                hitchExtraNs.addAndGet(interval - natural);
                 displayGaps.incrementAndGet();
                 if (interval > maxDisplayIntervalNs) {
                     maxDisplayIntervalNs = interval;
@@ -842,8 +907,9 @@ public final class TvDiagnostics {
             final String onTime = pN > 0
                     ? String.format(Locale.US, " · %.0f%% on time", 100.0 * (pN - presentSlips.get()) / pN)
                     : "";
-            sb.append(String.format(Locale.US, "Screen: %,d of %,d frames shown%s · %d hitches (longest %d ms) · display drops %d%s\n",
+            sb.append(String.format(Locale.US, "Screen: %,d of %,d frames shown%s · %d hitches (longest %d ms, picture stood still %d ms in all) · display drops %d%s\n",
                     displayed, released, onTime, displayGaps.get(), maxDisplayIntervalNs / 1_000_000L,
+                    hitchExtraNs.get() / 1_000_000L,
                     unplannedDrops.get(),
                     fasterThanScreen ? String.format(Locale.US, " (stream faster than the %.0f Hz screen: it can show %.0f per second)",
                             screenHz, screenHz) : ""));
@@ -887,7 +953,8 @@ public final class TvDiagnostics {
         }
 
         // Decoder
-        sb.append("Decoder: ").append(decoderPreset.isEmpty() ? ("preset " + decoderConfigTry) : decoderPreset)
+        sb.append("Decoder: ").append(decoderName).append(" · ")
+                .append(decoderPreset.isEmpty() ? ("preset " + decoderConfigTry) : decoderPreset)
                 .append(String.format(Locale.US, " · input waits %d (max %d ms) · keyframe requests %d · hand-off max %d ms (slow %d)\n",
                         inputWaits.get(), maxInputWaitNs / 1_000_000L, keyframeRequests.get(),
                         maxSubmitNs / 1_000_000L, slowSubmits.get()));
@@ -1002,7 +1069,7 @@ public final class TvDiagnostics {
     }
 
     @SuppressWarnings("deprecation")
-    private static String describeNetwork(Context context) {
+    public static String describeNetwork(Context context) {
         try {
             final android.net.ConnectivityManager cm =
                     (android.net.ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
@@ -1049,7 +1116,7 @@ public final class TvDiagnostics {
     }
 
     @SuppressWarnings("deprecation")
-    private static String describeDisplay(Context context) {
+    public static String describeDisplay(Context context) {
         try {
             Display d = null;
             if (context instanceof Activity) {

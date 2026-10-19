@@ -24,6 +24,7 @@ import com.limelight.preferences.PreferenceConfiguration;
 public final class TvStreamReport {
     private static final String KEY_TEXT = "artemide_tv_report_text";
     private static final String KEY_PENDING = "artemide_tv_report_pending";
+    private static final String STREAM_FILE = "last-stream.txt";
 
     private TvStreamReport() {}
 
@@ -39,6 +40,14 @@ public final class TvStreamReport {
         } catch (Throwable t) {
             LimeLog.warning("Artemide TV: could not save the stream report: " + t);
         }
+        // The report with the stream's second-by-second timeline, for "Upload log"
+        TvLog.writePrivate(context, STREAM_FILE, "STREAM REPORT\n" + text + "\n\nTIMELINE (one line per second)\n" +
+                TvTimeline.text());
+    }
+
+    /** The last stream's report and timeline, or null. */
+    public static String lastStreamLog(Context context) {
+        return TvLog.readPrivate(context, STREAM_FILE);
     }
 
     /** Shows the last stream's report once, if there is a new one and the setting is on. */
@@ -76,6 +85,7 @@ public final class TvStreamReport {
                     .setTitle("Stream report")
                     .setView(scroll)
                     .setPositiveButton(android.R.string.ok, null)
+                    .setNegativeButton("Upload log", (d, w) -> TvLogUpload.showDialog(activity, "stream report"))
                     .setNeutralButton("Don't show again", (d, w) ->
                             sp.edit().putBoolean(PreferenceConfiguration.TV_STREAM_REPORT_PREF_STRING, false).apply())
                     .show();

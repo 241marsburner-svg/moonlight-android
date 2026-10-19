@@ -13,6 +13,8 @@ public class ArtemisApplication extends Application {
         // Artemide TV build: write TV-tuned first-run defaults before any settings UI can
         // persist the stock phone defaults. No-op for every other build type.
         com.limelight.tv.TvDefaults.applyIfNeeded(this);
+        // Artemide TV build: keep the app's log lines in memory for "Upload log"
+        com.limelight.tv.TvLog.install(this);
 
         ProfilesManager profilesManager = ProfilesManager.getInstance();
         if (!profilesManager.load(this)) {

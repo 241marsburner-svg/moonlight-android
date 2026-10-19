@@ -5,6 +5,28 @@
     app:iconSpaceReserved="false">
 
     <PreferenceCategory
+        android:key="category_tv_app"
+        android:title="@string/category_tv_app"
+        app:iconSpaceReserved="false">
+        <Preference
+            android:key="pref_tv_check_update"
+            android:summary="@string/summary_tv_check_update"
+            android:title="@string/title_tv_check_update"
+            app:iconSpaceReserved="false" />
+        <Preference
+            android:key="pref_tv_upload_log"
+            android:summary="@string/summary_tv_upload_log"
+            android:title="@string/title_tv_upload_log"
+            app:iconSpaceReserved="false" />
+        <CheckBoxPreference
+            android:defaultValue="true"
+            android:key="checkbox_tv_auto_update_check"
+            android:summary="@string/summary_tv_auto_update_check"
+            android:title="@string/title_tv_auto_update_check"
+            app:iconSpaceReserved="false" />
+    </PreferenceCategory>
+
+    <PreferenceCategory
         android:key="category_video_settings"
         android:title="@string/category_video_settings"
         app:initialExpandedChildrenCount="5"

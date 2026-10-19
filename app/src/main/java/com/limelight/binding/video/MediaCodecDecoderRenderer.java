@@ -1099,6 +1099,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             videoDecoder = MediaCodec.createByCodecName(selectedDecoderInfo.getName());
             configureAndStartDecoder(format);
             LimeLog.info("Using codec " + selectedDecoderInfo.getName() + " for hardware decoding " + format.getString(MediaFormat.KEY_MIME));
+            TvDiagnostics.setDecoderName(selectedDecoderInfo.getName() + " (" + format.getString(MediaFormat.KEY_MIME) + ")");
             configured = true;
         } catch (IllegalArgumentException e) {
             e.printStackTrace();
