@@ -179,8 +179,27 @@ public final class TvLatencyTest {
         }
     }
 
+    // The screen model (SurfaceFlinger's timing) gives the refresh each frame is shown on; when it
+    // runs, the frame-rendered callback is not used (on this TV it only echoes the requested time)
+    private static volatile boolean modelTimes;
+
+    /** Screen model: the frame with this presentation time is shown on the refresh at slotNs. */
+    public static void onFrameShownModel(long ptsUs, long slotNs) {
+        if (!modelTimes) {
+            modelTimes = true;
+        }
+        complete(ptsUs, slotNs);
+    }
+
     /** Frame-rendered callback: the frame with this presentation time was on screen at displayNs. */
     public static void onFrameDisplayed(long ptsUs, long displayNs) {
+        if (modelTimes) {
+            return;
+        }
+        complete(ptsUs, displayNs);
+    }
+
+    private static void complete(long ptsUs, long displayNs) {
         final TvLatencyTest t = active;
         if (t == null) {
             return;
@@ -269,6 +288,9 @@ public final class TvLatencyTest {
                 b.append(" · to the screen ").append(Math.round(sumScreen / (double) nScreen));
             }
             b.append(" ms");
+            if (modelTimes) {
+                b.append(" (screen times: the refresh SurfaceFlinger shows the frame on, from its timing)");
+            }
             if (t.withoutScreenTime > 0) {
                 b.append(String.format(Locale.US, " (%d counted only to the release)", t.withoutScreenTime));
             }

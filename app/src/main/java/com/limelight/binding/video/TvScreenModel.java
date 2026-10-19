@@ -142,6 +142,7 @@ final class TvScreenModel {
         final long slot = curSlotNs;
         if (curPtsUs > 0L) {
             TvDiagnostics.onModelScreen(slot / 1000L - curPtsUs);
+            com.limelight.tv.TvLatencyTest.onFrameShownModel(curPtsUs, slot);
         }
         if (lastShownSlotNs != 0L) {
             final long refreshes = Math.round((slot - lastShownSlotNs) / (double) period);
