@@ -6,12 +6,15 @@
 <title>Artemide TV stream test</title>
 <!--
   Artemide TV: steady moving picture for the auto-tune (and for judging a stream by eye).
-  Every frame moves a busy tile pattern, so the PC's encoder works about as hard as in a game and
-  every test of the auto-tune sees the same picture. The ladder lights one cell per frame: a
-  skipped cell on the TV is a dropped frame, a cell lit twice a repeated one.
-  It draws as many frames as the browser gives it (the refresh rate of the screen it is on: for a
-  120 fps stream that must be Apollo's virtual display at 120 Hz) and says how many it drew and
-  how long its longest frame took, so a stall on the PC itself shows in the picture.
+  A busy tile pattern moves all the time, so the PC's encoder works about as hard as in a game and
+  every test of the auto-tune sees the same picture. On the TV, a skipped ladder cell is a dropped
+  frame, a cell lit twice a repeated one.
+  Everything moves with the clock, not per drawn frame, so it looks the same whatever rate the
+  browser draws at: the refresh rate of the screen it is on, which is the stream's rate on Apollo's
+  virtual display, or far more on Vibepollo's high-refresh one (240 or 1000 Hz). The PC then
+  captures a frame of it at the stream's rate. The ladder lights one cell per 1/60 s: on a 60 Hz
+  TV every refresh should light the next cell. It says how many frames the browser drew and how
+  long its longest frame took, so a stall on the PC itself shows in the picture.
   Drawing costs well under a millisecond a frame (the tiles are a tiny image scaled up), so the
   page can't be what limits the frame rate.
   Idea from moonlight-tcl's tools/framerate-test.html (pabragin/moonlight-tcl, GPLv3).
@@ -26,15 +29,16 @@
 <body>
 <canvas id="c"></canvas>
 <div id="help">F or click: full screen · L: lighter picture · Space: pause · this text hides after 15 s.<br>
-The corner shows the frames per second the browser draws here. For a 120 fps stream it must say about 120:
-if it says 60, the browser is drawing at 60 (move it to Apollo's virtual display, check that the display runs at 120 Hz).
-"Longest frame" in red means the PC itself stalled.</div>
+The corner shows the frames per second the browser draws here: at least the stream's rate (120 for a 120 fps stream; on a
+Vibepollo high-refresh virtual display far more, which is fine). If it says 60 in a 120 fps stream, the browser is on a 60 Hz screen.
+"Longest frame" in red means the PC itself stalled. The ladder lights one cell per 1/60 s: on the TV each refresh should light the next one.</div>
 <script>
 (function () {
   var canvas = document.getElementById('c');
   var ctx = canvas.getContext('2d', { alpha: false });
   var help = document.getElementById('help');
-  var frame = 0, paused = false, light = false;
+  var paused = false, light = false;
+  var t = 0;      // ms of animation time (stops while paused)
   var last = 0, count = 0, since = 0, fps = 0, worst = 0, worstShown = 0;
 
   // The tiles: one pixel per tile in a small canvas, scaled up without smoothing
@@ -99,9 +103,9 @@ if it says 60, the browser is drawing at 60 (move it to Apollo's virtual display
     if (last > 0) {
       var dt = now - last;
       if (dt > worst) worst = dt;
+      t += Math.min(dt, 250);
     }
     last = now;
-    frame++;
     count++;
     if (since === 0) since = now;
     if (now - since >= 1000) {
@@ -111,16 +115,16 @@ if it says 60, the browser is drawing at 60 (move it to Apollo's virtual display
     }
 
     var W = canvas.width, H = canvas.height, s = W / 1920;
-    // Busy moving texture (game-like encoder load): tiles drift diagonally, colours shift
-    // every 4 frames
-    var seed = frame >> 2;
+    // Busy moving texture (game-like encoder load): tiles drift diagonally (300 px/s at 1080p),
+    // colours change 15 times a second
+    var seed = Math.floor(t * 15 / 1000);
     for (var y = 0, i = 0; y < rows; y++) {
       for (var x = 0; x < cols; x++, i++) {
         px[i] = palette[hash(x, y, seed) & 511];
       }
     }
     tctx.putImageData(img, 0, 0);
-    var off = (frame * 5) % cell - cell;
+    var off = Math.floor(t * 0.3 * s) % cell - cell;
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(tiles, 0, 0, cols, rows, off, off, cols * cell, rows * cell);
     // Grid lines between the tiles (fine detail for the encoder)
@@ -128,16 +132,17 @@ if it says 60, the browser is drawing at 60 (move it to Apollo's virtual display
     for (var gx = 0; gx <= cols; gx++) ctx.fillRect(off + gx * cell - 1, 0, 1, H);
     for (var gy = 0; gy <= rows; gy++) ctx.fillRect(0, off + gy * cell - 1, W, 1);
 
-    // Ladder: one cell per frame
+    // Ladder: one cell per 1/60 s (a 60 Hz TV refresh)
+    var tick = Math.floor(t * 60 / 1000);
     var cells = 60, cw = W / cells;
     ctx.fillStyle = '#222';
     ctx.fillRect(0, H * 0.44, W, H * 0.12);
     ctx.fillStyle = '#000';
     for (var k = 0; k <= cells; k++) ctx.fillRect(k * cw - 2 * s, H * 0.44, 4 * s, H * 0.12);
     ctx.fillStyle = '#fff';
-    ctx.fillRect((frame % cells) * cw + 2 * s, H * 0.44, cw - 4 * s, H * 0.12);
-    // Bar moving a fixed step per frame: smooth when every frame arrives
-    var bw = 80 * s, bx = (frame * 14 * s) % (W + bw) - bw;
+    ctx.fillRect((tick % cells) * cw + 2 * s, H * 0.44, cw - 4 * s, H * 0.12);
+    // Bar moving at a steady speed (840 px/s at 1080p): smooth when every frame arrives
+    var bw = 80 * s, bx = (t * 0.84 * s) % (W + bw) - bw;
     ctx.fillStyle = '#4af';
     ctx.fillRect(bx, H * 0.64, bw, H * 0.12);
     // Counter, the browser's own frame rate and its longest frame (if the rate is below the
@@ -147,11 +152,12 @@ if it says 60, the browser is drawing at 60 (move it to Apollo's virtual display
     ctx.fillStyle = '#fff';
     ctx.textBaseline = 'top';
     ctx.font = Math.round(120 * s) + 'px system-ui, sans-serif';
-    ctx.fillText(String(frame % 1000).padStart(3, '0'), 40 * s, 40 * s);
+    ctx.fillText(String(tick % 1000).padStart(3, '0'), 40 * s, 40 * s);
     ctx.font = Math.round(40 * s) + 'px system-ui, sans-serif';
     var interval = fps > 0 ? 1000 / fps : 16.7;
     ctx.fillText(fps.toFixed(1) + ' fps on the PC', 40 * s, 190 * s);
-    ctx.fillStyle = worstShown > interval * 2.5 ? '#f55' : '#9c9';
+    // Red: a stall the stream can see (at least a 60 fps frame and 2.5 drawn frames)
+    ctx.fillStyle = worstShown > Math.max(interval * 2.5, 20) ? '#f55' : '#9c9';
     ctx.fillText('longest frame ' + worstShown.toFixed(0) + ' ms', 40 * s, 240 * s);
   }
   requestAnimationFrame(draw);

@@ -1434,8 +1434,8 @@ public final class TvAutoTune {
             if (r.ok && r.pcLimited) {
                 b.append(String.format(Locale.US,
                         "Note: in the %d fps tests the PC sent only about %.0f fps, so they ranked last. The game or the stream test page " +
-                                "drew at %.0f on the PC: the page must be on Apollo's virtual display running at %d Hz (its corner then says about %d fps on the PC), " +
-                                "a game must be allowed %d fps.\n",
+                                "drew at %.0f on the PC: the page must be on the virtual display of Apollo or Vibepollo running at %d Hz or more (its corner then says at least %d fps on the PC), " +
+                                "a game must be allowed %d fps (with Vibepollo: its frame limiter caps the game at the stream's rate).\n",
                         r.config.fps, r.realFps, r.realFps, r.config.fps, r.config.fps, r.config.fps));
                 break;
             }

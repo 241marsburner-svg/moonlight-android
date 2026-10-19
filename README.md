@@ -50,10 +50,28 @@ for its game mode, but the C7K reports that it doesn't support the request.
 Then let the **auto-tune** find what works best on your network (below). Audio: *TV adaptive*
 is the default. Choose *Off* if you listen on a headset at the PC.
 
-On the PC (Apollo/Sunshine):
+On the PC (Apollo, Sunshine or Vibepollo):
 - connect the PC to the router by cable, and the TV over 5 GHz Wi-Fi (or cable)
 - on an Intel Arc GPU, set the QuickSync preset to *veryfast* for the lowest encoding delay
-- cap the game at the stream's frame rate (60, or 120) with its own limiter, so frames come evenly
+  (`qsv_preset`; Sunshine's default is *medium*)
+- cap the game at the stream's frame rate (60, or 120), so frames come evenly
+
+With [Vibepollo](https://github.com/Nonary/Vibepollo) (a Sunshine fork) the virtual display can
+run far faster than the stream (4x while a game runs, or up to 1000 Hz). The PC then picks up a
+game's new frame within about a millisecond instead of waiting for the next refresh of a 60 Hz
+virtual display, and captures at its own steady rate. That is why it stutters less. With it:
+- install RTSS (RivaTuner Statistics Server) and turn on the frame limiter
+  (`frame_limiter_enable`, provider `rtss`; Intel cards have no NVIDIA limiter). Vibepollo then
+  caps the game at the stream's frame rate. Without a cap a game runs at hundreds of fps on a
+  1000 Hz screen, and the GPU has less time for the encoder, which then delivers frames later and
+  less evenly.
+- capture: try `wgcc` (Windows Graphics Capture at a constant rate) if `wgc` (variable rate)
+  stutters, or turn on `wgc_pacing_smoothing`. The stream report's "frames later than the PC's
+  rhythm" shows which is steadier.
+- leave `fec_percentage` at 20, `max_bitrate` at 0 (the app's bitrate is used) and
+  `minimum_fps_target` at 0.
+- the stream test page moves with the clock, so it is fine on a 1000 Hz virtual display (its
+  corner then shows far more than 120 fps on the PC).
 
 ## 120 fps on the 60 Hz C7K
 
