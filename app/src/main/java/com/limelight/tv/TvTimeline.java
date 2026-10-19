@@ -24,21 +24,41 @@ public final class TvTimeline {
     private static long startNs;
     private static int dropped;
 
+    // Start-up: a "calm" second showed (nearly) every frame, without a lost frame, a network
+    // pause, a keyframe request or more than a small hitch. Streams often stutter for a few
+    // seconds after they start (display mode switch, the PC adapting, Wi-Fi rates settling).
+    public static final int CALM_SECONDS_FOR_SMOOTH = 3;
+    private static final long CALM_MAX_STALL_MS = 25;
+    private static int calmStreak;
+    private static int smoothAfterSeconds = -1;
+
     public static final String HEADER =
             "t s;screen Hz;shown fps;sent fps;arrived fps;hitches;longest frame ms;stalled ms;" +
             "net pauses;longest arrival gap ms;frames lost;Mbps;decode ms;TV adds ms;max TV ms;" +
-            "buffer ms;display drops;keyframe req;audio gaps;round trip ms;note";
+            "buffer ms;display drops;keyframe req;audio gaps;round trip ms;PC ms;frames in decoder;note";
 
     public static synchronized void reset() {
         lines.clear();
         last = null;
         dropped = 0;
+        calmStreak = 0;
+        smoothAfterSeconds = -1;
         startNs = System.nanoTime();
+    }
+
+    /** How many seconds in a row, up to now, were calm. */
+    public static synchronized int calmStreak() {
+        return calmStreak;
+    }
+
+    /** Seconds after the start until the stream became smooth (calm for 3 s in a row), -1 = not yet. */
+    public static synchronized int smoothAfterSeconds() {
+        return smoothAfterSeconds;
     }
 
     /** Adds a marker line (e.g. "measuring starts"). */
     public static synchronized void mark(String note) {
-        add(String.format(Locale.US, "%.0f;;;;;;;;;;;;;;;;;;;;%s", secondsSinceStart(), note));
+        add(String.format(Locale.US, "%.0f;;;;;;;;;;;;;;;;;;;;;;%s", secondsSinceStart(), note));
     }
 
     /**
@@ -58,11 +78,27 @@ public final class TvTimeline {
         if (secs < 0.2) {
             return;
         }
+        // Was this second calm?
+        final double shownFps = (s.displayed - p.displayed) / secs;
+        final double sentFps = (s.released - p.released) / secs;
+        final double streamFps = TvDiagnostics.expectedFps();
+        final double possible = hz > 20f ? Math.min(streamFps, hz) : streamFps;
+        final double seen = shownFps > 0 ? shownFps : sentFps;
+        final boolean calm = possible > 0 && seen >= possible * 0.9 &&
+                (s.hitchExtraNs - p.hitchExtraNs) / 1_000_000L <= CALM_MAX_STALL_MS &&
+                s.framesLost == p.framesLost && s.netGaps == p.netGaps && s.keyframeRequests == p.keyframeRequests;
+        calmStreak = calm ? calmStreak + 1 : 0;
+        if (smoothAfterSeconds < 0 && calmStreak >= CALM_SECONDS_FOR_SMOOTH) {
+            smoothAfterSeconds = Math.max(0, (int) Math.round(secondsSinceStart()) - CALM_SECONDS_FOR_SMOOTH);
+        }
+
         final long decN = s.decodeSamples - p.decodeSamples;
         final long scrN = s.screenSamples - p.screenSamples;
         final long leadN = s.leadSamples - p.leadSamples;
+        final long hostN = s.hostSamples - p.hostSamples;
+        final long inN = s.inFlightSamples - p.inFlightSamples;
         add(String.format(Locale.US,
-                "%.0f;%.0f;%.1f;%.1f;%.1f;%d;%d;%d;%d;%d;%d;%.1f;%s;%s;%s;%s;%d;%d;%d;%s;%s",
+                "%.0f;%.0f;%.1f;%.1f;%.1f;%d;%d;%d;%d;%d;%d;%.1f;%s;%s;%s;%s;%d;%d;%d;%s;%s;%s;%s",
                 secondsSinceStart(), hz,
                 (s.displayed - p.displayed) / secs,
                 (s.released - p.released) / secs,
@@ -82,6 +118,8 @@ public final class TvTimeline {
                 s.keyframeRequests - p.keyframeRequests,
                 s.audioGaps - p.audioGaps,
                 rttMs >= 0 ? String.valueOf(rttMs) : "",
+                hostN > 0 ? fmt1((s.hostSumTenths - p.hostSumTenths) / 10.0 / hostN) : "",
+                inN > 0 ? String.format(Locale.US, "%.2f", (s.inFlightSum - p.inFlightSum) / (double) inN) : "",
                 note != null ? note : ""));
     }
 

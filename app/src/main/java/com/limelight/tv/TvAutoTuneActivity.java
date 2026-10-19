@@ -162,12 +162,16 @@ public class TvAutoTuneActivity extends Activity {
         }
         launchPending = true;
         final int done = TvAutoTune.completedCount();
+        final String next = TvAutoTune.nextLabel();
+        final String stage = TvAutoTune.nextStageName();
         final int total = TvAutoTune.planSize();
-        title.setText(String.format(Locale.US, "Auto-tune: test %d of %d", done + 1, total));
+        title.setText(String.format(Locale.US, "Auto-tune: test %d of %s%d · %s", done + 1,
+                TvAutoTune.planComplete() ? "" : "about ", total, stage));
         status.setText(String.format(Locale.US,
-                "Next: %s, starting in %d s. Each test takes about a minute. Leave the game (or the stream " +
-                        "test page) running on the PC and don't touch the controller. Back stops the auto-tune.",
-                TvAutoTune.nextLabel(), NEXT_TEST_DELAY_MS / 1000));
+                "Next: %s, starting in %d s. Each test takes about a minute: first the formats (resolution, " +
+                        "frame rate, bitrate, codec), then the latency options on the best one. Leave the game (or the " +
+                        "stream test page) running on the PC and don't touch the controller. Back stops the auto-tune.",
+                next, NEXT_TEST_DELAY_MS / 1000));
         table.setText(done > 0 ? "Results so far:\n\n" + TvAutoTune.summaryText() : "");
         setButtons(new String[] { "Stop" }, new Runnable[] { this::onBackPressed });
         handler.postDelayed(launchNext, NEXT_TEST_DELAY_MS);
@@ -205,8 +209,8 @@ public class TvAutoTuneActivity extends Activity {
         title.setText("Auto-tune results");
         final StringBuilder s = new StringBuilder();
         if (best != null) {
-            s.append(String.format(Locale.US, "Best overall: %s (total %.0f: picture %.0f, smoothness %.0f, latency %.0f).",
-                    best.config.describe(), best.total, best.picture, best.smooth, best.latency));
+            s.append(String.format(Locale.US, "Recommended: %s (total %.0f: picture %.0f, smoothness %.0f, latency %.0f, about %.0f ms PC to TV).",
+                    best.config.describe(), best.total, best.picture, best.smooth, best.latency, best.latencyMs));
         } else {
             s.append("No test finished. Check that the PC is reachable and try again.");
         }
@@ -218,7 +222,7 @@ public class TvAutoTuneActivity extends Activity {
         table.setText(TvAutoTune.summaryText());
 
         if (best != null) {
-            setButtons(new String[] { "Use best", "Pick a test", "Details", "Upload log", "Keep my settings" },
+            setButtons(new String[] { "Use recommended", "Pick a test", "Details", "Upload log", "Keep my settings" },
                     new Runnable[] { () -> use(best), this::pick, this::showDetails, this::upload, this::finish });
         } else {
             setButtons(new String[] { "Details", "Upload log", "Close" },
@@ -283,8 +287,8 @@ public class TvAutoTuneActivity extends Activity {
         for (TvAutoTune.Result r : ranked) {
             if (r.ok) {
                 usable.add(r);
-                labels.add(String.format(Locale.US, "%s  ·  total %.0f · picture %.0f · smooth %.0f · latency %.0f",
-                        r.config.describe(), r.total, r.picture, r.smooth, r.latency));
+                labels.add(String.format(Locale.US, "%s  ·  total %.0f · picture %.0f · smooth %.0f · latency %.0f (%.0f ms)",
+                        r.config.describe(), r.total, r.picture, r.smooth, r.latency, r.latencyMs));
             }
         }
         if (usable.isEmpty()) {

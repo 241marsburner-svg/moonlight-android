@@ -75,9 +75,9 @@ On the PC (Apollo/Sunshine):
 **Measuring and fixing**
 - **Stream report** after each stream: frames shown, hitches, network pauses, loss, round trip,
   decoder and audio figures, and the TV's memory and temperature.
-- **Auto-tune**: about 11 short test streams (resolutions, frame rates, bitrates, HEVC against
-  AV1, both pacing modes), each scored for *smoothness*, *latency* and *picture*. At the end you
-  can use the best one or pick one yourself. *Details* shows how each score came about.
+- **Auto-tune**: about 15 short test streams (formats first, then latency options on the best
+  format), each scored for *smoothness*, *latency* and *picture*. At the end you can use the
+  recommended settings or pick a test yourself. *Details* shows how each score came about.
 - **Latency test**: button-to-screen time, with `latency-test.html` open on the PC.
 - **Upload log**: puts everything measured into one log, removes IP and MAC addresses,
   keys and IDs, uploads it to a paste site, and shows a link and QR code you can send on.
@@ -89,20 +89,36 @@ On the PC (Apollo/Sunshine):
    start a game. Every test should see the same moving picture.
 2. On the TV, hold OK on that app in the app list and choose *Auto-tune*, or press Back
    during a stream and choose *Auto-tune*.
-3. Don't touch the controller for about 11 minutes. To stop early, press Back on the auto-tune
-   screen between two tests, or quit the stream.
+3. Don't touch the controller for 15 to 20 minutes. To stop early, press Back on the
+   auto-tune screen between two tests, or quit the stream.
+
+It runs in rounds:
+1. **Formats**: resolutions, frame rates, bitrates and codecs (HEVC against AV1, if the TV has
+   an AV1 decoder), all with TV game pacing, plus your current settings.
+2. **Latency options**, on the best format: the same settings again (that shows how much the
+   results vary from run to run), TV game with aggressive timing, TV smooth, the stock *lowest
+   latency* pacing, MediaTek's extra decoder keys, and sync decoding.
+3. **Final check**: the options that helped, together (only when more than one helped).
+
+Each test first waits until its picture has been smooth for 3 seconds in a row: streams often
+stutter for a few seconds after they start. It waits at most 25 seconds. A setting that never
+becomes smooth is measured anyway (more briefly), marked *never smooth*, and never recommended.
 
 The scores (0 to 100, higher is better):
 - **Smoothness**: frames shown against what the screen can show. Points come off for the time
-  the picture stood still, for lost frames, and for long network pauses. 0 means the deductions
-  added up to more than 100; *Details* shows which ones.
-- **Latency**: what the TV adds (decode, buffer, compositor), plus half the network round trip
-  and half a frame interval.
+  the picture stood still, for lost frames, for long network pauses, and for a frame rate that
+  doesn't fit the screen's refresh rate (90 fps on a 60 Hz screen shows frames for unequal
+  times). 0 means the deductions added up to more than 100; *Details* shows which ones.
+- **Latency**: the estimated delay from the PC's screen to the TV's screen, in ms. That is the
+  PC's capture and encoding (as the PC reports it), half the network round trip, what the TV
+  adds (decode, buffer, compositor), and half a frame interval.
 - **Picture**: resolution and bits per pixel. AV1 counts as 30 % more efficient than HEVC.
 
-The total is 40 % smoothness, 35 % latency and 25 % picture. A test below 70 smoothness is
-never chosen as best while a smoother one exists. The full log goes to
-`Download/ArtemideTV` on the TV.
+The total is 40 % smoothness, 35 % latency and 25 % picture. A latency option is only
+recommended when it beats the repeated baseline by more than the run-to-run difference, without
+costing smoothness. Each test's log also says whether the decoder really ran in low-latency
+mode. That covers whether it accepted the low-latency setting, its decode time per frame, and
+whether it held frames back. The full log goes to `Download/ArtemideTV` on the TV.
 
 ## Tools for the PC
 

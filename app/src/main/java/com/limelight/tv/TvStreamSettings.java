@@ -61,7 +61,9 @@ public final class TvStreamSettings {
         for (Map.Entry<String, String> e : items.entrySet()) {
             b.append(e.getKey()).append(": ").append(e.getValue()).append('\n');
         }
+        b.append(describeLowLatencyKeys(items.get("Decoder format asked"), items.get("Decoder format accepted"))).append('\n');
         try {
+            b.append(com.limelight.binding.video.TvDiagnostics.describeDecoderBehavior()).append('\n');
             final String auto = com.limelight.binding.video.TvDiagnostics.describeAutomatic();
             if (!auto.isEmpty()) {
                 b.append(auto);
@@ -92,6 +94,75 @@ public final class TvStreamSettings {
             }
         }
         return b.toString();
+    }
+
+    /**
+     * Was the decoder asked for low-latency mode, and did it say it took it? (MediaCodec returns
+     * the input format with the settings the decoder actually uses; a key it ignores is missing.)
+     */
+    static String describeLowLatencyKeys(String asked, String accepted) {
+        if (asked == null) {
+            return "Decoder low-latency key: no decoder started";
+        }
+        final boolean askedLl = formatHas(asked, "low-latency", "1");
+        final StringBuilder b = new StringBuilder("Decoder low-latency key: ");
+        if (!askedLl) {
+            b.append("not asked (this decoder setup had none)");
+        } else if (accepted == null || accepted.equals("-")) {
+            b.append("asked; the decoder reported nothing back");
+        } else if (formatHas(accepted, "low-latency", "1")) {
+            b.append("asked, and the decoder confirmed it (low-latency=1)");
+        } else {
+            b.append("asked, but the decoder did not report it back (it may ignore it: see the low-latency check)");
+        }
+        // Vendor keys: which of the asked ones the decoder reported back
+        final List<String> taken = new ArrayList<>(), ignored = new ArrayList<>();
+        for (String key : keysOf(asked)) {
+            if (!key.startsWith("vendor.") && !key.equals("vdec-lowlatency") && !key.equals("priority")
+                    && !key.equals("operating-rate")) {
+                continue;
+            }
+            if (accepted != null && keysOf(accepted).contains(key)) {
+                taken.add(key);
+            } else {
+                ignored.add(key);
+            }
+        }
+        if (!taken.isEmpty()) {
+            b.append(" · reported back: ").append(String.join(", ", taken));
+        }
+        if (!ignored.isEmpty()) {
+            b.append(" · not reported back: ").append(String.join(", ", ignored));
+        }
+        return b.toString();
+    }
+
+    /** True when a MediaFormat's text ("{a=1, b=2}") has key=value. */
+    static boolean formatHas(String format, String key, String value) {
+        if (format == null) {
+            return false;
+        }
+        final java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("(?:^|[{,\\s])" + java.util.regex.Pattern.quote(key) + "=([^,}]*)").matcher(format);
+        while (m.find()) {
+            if (m.group(1).trim().equals(value)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static Set<String> keysOf(String format) {
+        final Set<String> keys = new HashSet<>();
+        if (format == null) {
+            return keys;
+        }
+        final java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("(?:^|[{,]\\s*)([A-Za-z0-9_.\\-]+)=").matcher(format);
+        while (m.find()) {
+            keys.add(m.group(1));
+        }
+        return keys;
     }
 
     // ---------------- Helpers for the writers ----------------

@@ -108,9 +108,56 @@ public final class TvDiagnostics {
     private static volatile long tickMaxScreenUs;
     // Time the picture stood still beyond its normal cadence (sum over all hitches)
     private static final AtomicLong hitchExtraNs = new AtomicLong();
+    // PC side: capture to encoded, per frame, as the PC reports it (0.1 ms units, 0 = not sent)
+    private static final AtomicLong hostSumTenths = new AtomicLong();
+    private static final AtomicLong hostSamples = new AtomicLong();
+    private static volatile long windowMaxHostTenths;
+    private static volatile long sessionMaxHostTenths;
+    // Frames still inside the decoder whenever one comes out (0 = it hands each frame back
+    // before the next arrives, which is what a decoder in low-latency mode does)
+    private static final AtomicLong inFlightSum = new AtomicLong();
+    private static final AtomicLong inFlightSamples = new AtomicLong();
+    private static volatile long windowMaxInFlight;
+    private static volatile long sessionMaxInFlight;
+
+    /** One frame's processing time on the PC, capture to encoded (0.1 ms units; 0 = unknown). */
+    public static void onHostLatency(int tenthsMs) {
+        if (!collecting || tenthsMs <= 0 || tenthsMs > 10_000) {
+            return;
+        }
+        hostSumTenths.addAndGet(tenthsMs);
+        hostSamples.incrementAndGet();
+        if (tenthsMs > windowMaxHostTenths) {
+            windowMaxHostTenths = tenthsMs;
+        }
+        if (tenthsMs > sessionMaxHostTenths) {
+            sessionMaxHostTenths = tenthsMs;
+        }
+    }
+
+    /** A decoded frame came out; this many frames were still inside the decoder. */
+    static void onDecoderInFlight(long frames) {
+        if (!collecting || frames < 0 || frames > 64) {
+            return;
+        }
+        inFlightSum.addAndGet(frames);
+        inFlightSamples.incrementAndGet();
+        if (frames > windowMaxInFlight) {
+            windowMaxInFlight = frames;
+        }
+        if (frames > sessionMaxInFlight) {
+            sessionMaxInFlight = frames;
+        }
+    }
     // The screen's refresh period (fallback when the pacer has no vsync grid)
     private static volatile long displayPeriodNs;
     private static volatile String decoderName = "?";
+
+    /** The stream's frame rate (as the pacer was told). */
+    public static double expectedFps() {
+        final long p = expectedFramePeriodNs;
+        return p > 0 ? 1e9 / p : 60.0;
+    }
 
     /** The screen's refresh rate, from the display mode (Game, at start and once a second). */
     public static void setDisplayRefreshHz(float hz) {
@@ -174,6 +221,8 @@ public final class TvDiagnostics {
         public long unplannedDrops, keyframeRequests, audioGaps, inputWaits;
         public long maxDisplayIntervalNs, maxNetGapMs, maxScreenUs; // since beginWindow()
         public long arrivals, hitchExtraNs;
+        public long hostSumTenths, hostSamples, maxHostTenths;          // max: since beginWindow()
+        public long inFlightSum, inFlightSamples, maxInFlight;          // max: since beginWindow()
         // Longest values since the previous tick() (timeline)
         public long tickMaxFrameMs, tickMaxArrivalGapMs, tickMaxScreenUs;
     }
@@ -207,6 +256,12 @@ public final class TvDiagnostics {
         s.maxScreenUs = windowMaxScreenUs;
         s.arrivals = videoArrivals.get();
         s.hitchExtraNs = hitchExtraNs.get();
+        s.hostSumTenths = hostSumTenths.get();
+        s.hostSamples = hostSamples.get();
+        s.maxHostTenths = windowMaxHostTenths;
+        s.inFlightSum = inFlightSum.get();
+        s.inFlightSamples = inFlightSamples.get();
+        s.maxInFlight = windowMaxInFlight;
         return s;
     }
 
@@ -227,6 +282,8 @@ public final class TvDiagnostics {
         windowMaxDisplayIntervalNs = 0;
         windowMaxNetGapMs = 0;
         windowMaxScreenUs = 0;
+        windowMaxHostTenths = 0;
+        windowMaxInFlight = 0;
     }
 
     // --- Network loss and round trip (session, for the stream report) ---
@@ -322,6 +379,14 @@ public final class TvDiagnostics {
         tickMaxArrivalGapMs = 0;
         tickMaxScreenUs = 0;
         hitchExtraNs.set(0);
+        hostSumTenths.set(0);
+        hostSamples.set(0);
+        windowMaxHostTenths = 0;
+        sessionMaxHostTenths = 0;
+        inFlightSum.set(0);
+        inFlightSamples.set(0);
+        windowMaxInFlight = 0;
+        sessionMaxInFlight = 0;
         rttSumMs.set(0);
         rttSamples.set(0);
         maxRttMs = 0;
@@ -917,6 +982,14 @@ public final class TvDiagnostics {
             sb.append(String.format(Locale.US, "Screen: %,d frames sent to the display\n", released));
         }
 
+        // Start-up: how long until the picture was smooth (3 calm seconds in a row)
+        final int smoothAfter = com.limelight.tv.TvTimeline.smoothAfterSeconds();
+        if (secs >= 10) {
+            sb.append(smoothAfter < 0 ? "Start: never smooth for 3 seconds in a row"
+                    : smoothAfter <= 1 ? "Start: smooth from the first seconds"
+                    : "Start: smooth after " + smoothAfter + " s (the seconds before had hitches or pauses)").append('\n');
+        }
+
         // Network arrival
         sb.append(String.format(Locale.US, "Network: %d pauses (%.1f/min, longest %d ms%s) · %.0f%% of frames bunched · audio pauses %d (longest %d ms)\n",
                 netGaps, netGaps * 60.0 / secs, maxVideoNetGapMs,
@@ -942,7 +1015,12 @@ public final class TvDiagnostics {
         sb.append(loss).append('\n');
 
         // Delay contributions
-        sb.append(String.format(Locale.US, "Delay: decode %s · jitter buffer +%.1f ms (max %d ms, late %d, trims %d, replaced %d) · in app %.1f ms (max %d)\n",
+        final long hostN = hostSamples.get();
+        final long scrN = screenSamples.get();
+        sb.append(String.format(Locale.US, "Delay: PC %s · TV %s · decode %s · jitter buffer +%.1f ms (max %d ms, late %d, trims %d, replaced %d) · in app %.1f ms (max %d)\n",
+                hostN > 0 ? String.format(Locale.US, "%.1f ms (capture to encoded, max %.1f)",
+                        hostSumTenths.get() / 10.0 / hostN, sessionMaxHostTenths / 10.0) : "? (the PC sent no timing)",
+                scrN > 0 ? String.format(Locale.US, "%.1f ms (arrival to screen)", screenSumUs.get() / 1000.0 / scrN) : "?",
                 decodeMs >= 0 ? decodeMs + " ms" : "?", avgLeadMs, maxLeadNs / 1_000_000L,
                 pacerLate.get(), pacerTrims.get(), pacerCapped.get(), inAvg, maxInAppMs));
 
@@ -958,6 +1036,7 @@ public final class TvDiagnostics {
                 .append(String.format(Locale.US, " · input waits %d (max %d ms) · keyframe requests %d · hand-off max %d ms (slow %d)\n",
                         inputWaits.get(), maxInputWaitNs / 1_000_000L, keyframeRequests.get(),
                         maxSubmitNs / 1_000_000L, slowSubmits.get()));
+        sb.append(describeDecoderBehavior()).append('\n');
 
         // Audio
         sb.append("Audio: ").append(audioTrackMode);
@@ -1010,6 +1089,32 @@ public final class TvDiagnostics {
         sb.append(describeNetwork(context)).append(" · ").append(describeDisplay(context))
                 .append(" · Android ").append(Build.VERSION.RELEASE);
         return sb.toString();
+    }
+
+    /**
+     * Does the decoder behave like it is in low-latency mode? Such a decoder hands every frame
+     * back before the next one arrives: its decode time is below one frame interval and no
+     * other frame waits inside it. A decoder that keeps frames back (to reorder them, or to
+     * work in batches) shows both: decode times of a frame interval or more, frames waiting.
+     */
+    public static String describeDecoderBehavior() {
+        final long decN = decodeSamples.get();
+        final long inN = inFlightSamples.get();
+        if (decN == 0) {
+            return "Decoder low-latency check: no frames measured";
+        }
+        final double decodeMs = decodeSumUs.get() / 1000.0 / decN;
+        final double frameMs = Math.max(expectedFramePeriodNs, releaseIntervalEmaNs) / 1e6;
+        final double held = inN > 0 ? inFlightSum.get() / (double) inN : -1;
+        final boolean fast = decodeMs < frameMs * 0.75;
+        final boolean noBacklog = held < 0 || held < 0.5;
+        return String.format(Locale.US,
+                "Decoder low-latency check: %.1f ms per frame (a frame comes every %.1f ms) · frames waiting inside: %s → %s",
+                decodeMs, frameMs,
+                held >= 0 ? String.format(Locale.US, "%.2f on average, at most %d", held, sessionMaxInFlight) : "?",
+                fast && noBacklog ? "works like low-latency mode (every frame comes back before the next one)"
+                        : fast ? "fast, but keeps frames back now and then"
+                        : "NOT low latency: the decoder holds frames back");
     }
 
     /**

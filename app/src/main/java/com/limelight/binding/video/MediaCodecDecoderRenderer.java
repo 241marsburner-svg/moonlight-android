@@ -340,6 +340,10 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
     // ---- Runtime async decode toggle (requires decoder restart) ----
     private boolean computeDesiredUseAsyncCodecFromPrefs() {
+        // Artemide TV auto-tune test stream: the test's choice (in prefs), not the saved setting
+        if (BuildConfig.TV_BUILD && prefs != null && com.limelight.tv.TvAutoTune.isStepActive()) {
+            return ENABLE_ASYNC_DECODING && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && prefs.asyncDecodeEnabled;
+        }
         // Overlay-first, UI fallback. Default is enabled.
         final boolean userEnabled = readBooleanOverlayFirst(KEY_ASYNC_DECODE_ENABLED, true);
         return ENABLE_ASYNC_DECODING
@@ -408,6 +412,10 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     private int lastFrameNumber;
     // Artemide TV: frames dropped because they did not fit into the decoder's input buffer
     private int oversizedDecodeUnits;
+    // Artemide TV: picture frames handed to the decoder / taken out of it since it (re)started,
+    // to see how many frames wait inside it (written by the input / the renderer thread)
+    private volatile long tvFramesQueued;
+    private long tvFramesOut;
     private int refreshRate;
     private float refreshRateHz;
     private PreferenceConfiguration prefs;
@@ -1038,6 +1046,8 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         // Artemide TV: a (re)configured decoder starts a fresh presentation schedule,
         // and we want to know which frames really reach the screen.
         tvPacer.reset();
+        tvFramesQueued = 0;
+        tvFramesOut = 0;
         installFrameRenderedListener();
 // Diagnostics: dump negotiated input/output formats and check vendor keys acceptance
         try {
@@ -1342,6 +1352,8 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                 if (codecRecoveryType.get() == CR_RECOVERY_TYPE_FLUSH) {
                     LimeLog.warning("Flushing decoder");
                     tvPacer.reset();
+                    tvFramesQueued = 0;
+                    tvFramesOut = 0;
                     try {
                         videoDecoder.flush();
 
@@ -1876,6 +1888,9 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                             int lastIndex = outIndex;
 
                             numFramesOut++;
+                            // Artemide TV: how many frames are still inside the decoder now?
+                            tvFramesOut++;
+                            TvDiagnostics.onDecoderInFlight(tvFramesQueued - tvFramesOut);
 
                             // Track dequeue time for the newest output buffer (latest-only)
                             final long nowNsLocal = System.nanoTime();
@@ -2785,6 +2800,9 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             videoDecoder.queueInputBuffer(nextInputBufferIndex,
                     0, nextInputBuffer.position(),
                     timestampUs, codecFlags);
+            if (timestampUs != 0 && (codecFlags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                tvFramesQueued++;
+            }
 
             // Track enqueue time for this PTS
             if (timestampUs != 0) { // Don't track config buffers with timestamp 0
@@ -3242,6 +3260,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             }
         }
 
+        TvDiagnostics.onHostLatency(frameHostProcessingLatency);
         if (frameHostProcessingLatency != 0) {
             if (activeWindowVideoStats.minHostProcessingLatency != 0) {
                 activeWindowVideoStats.minHostProcessingLatency = (char) Math.min(activeWindowVideoStats.minHostProcessingLatency, frameHostProcessingLatency);

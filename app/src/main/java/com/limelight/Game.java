@@ -498,10 +498,27 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     }
 
     // ---- Artemide TV auto-tune: measuring window of a test stream ----
-    private final Runnable tuneWindowStart = () -> {
-        if (connected && com.limelight.tv.TvAutoTune.isStepActive()) {
-            com.limelight.binding.video.TvDiagnostics.beginWindow();
-            com.limelight.tv.TvAutoTune.onWindowStart(com.limelight.binding.video.TvDiagnostics.sample(), audioRtpStatsOrNull());
+    // Waits until the picture has been smooth for a few seconds (or the longest wait is over),
+    // then measures. Start-up stutter (display mode switch, the PC adapting, Wi-Fi settling) is
+    // not counted; a setting that never settles is measured anyway, and shorter.
+    private long tuneConnectedAtMs;
+    private final Runnable tuneSettleCheck = new Runnable() {
+        @Override
+        public void run() {
+            if (!connected || !com.limelight.tv.TvAutoTune.isStepActive()) {
+                return;
+            }
+            final long waited = android.os.SystemClock.uptimeMillis() - tuneConnectedAtMs;
+            final boolean settled = com.limelight.tv.TvTimeline.calmStreak() >=
+                    com.limelight.tv.TvTimeline.CALM_SECONDS_FOR_SMOOTH;
+            if (settled || waited >= com.limelight.tv.TvAutoTune.currentMaxWarmupMs()) {
+                com.limelight.binding.video.TvDiagnostics.beginWindow();
+                com.limelight.tv.TvAutoTune.onWindowStart(com.limelight.binding.video.TvDiagnostics.sample(),
+                        audioRtpStatsOrNull(), waited, settled);
+                timerHandler.postDelayed(tuneStepEnd, com.limelight.tv.TvAutoTune.measureMs(settled));
+            } else {
+                timerHandler.postDelayed(this, 1000);
+            }
         }
     };
 
@@ -2156,7 +2173,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         stopThermalWatch();
 
         if (timerHandler != null) {
-            timerHandler.removeCallbacks(tuneWindowStart);
+            timerHandler.removeCallbacks(tuneSettleCheck);
             timerHandler.removeCallbacks(tuneStepEnd);
             timerHandler.removeCallbacks(tuneConnectTimeout);
             timerHandler.removeCallbacks(tvTimelineTick);
@@ -4217,12 +4234,13 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                     timerHandler.removeCallbacks(tvTimelineTick);
                     timerHandler.postDelayed(tvTimelineTick, 1000);
                 }
-                // Artemide TV auto-tune: warm-up, then the measured window, then the next test
+                // Artemide TV auto-tune: wait until the picture settles, then the measured window,
+                // then the next test
                 if (BuildConfig.TV_BUILD && com.limelight.tv.TvAutoTune.isStepActive()) {
                     timerHandler.removeCallbacks(tuneConnectTimeout);
-                    final long warmup = com.limelight.tv.TvAutoTune.currentWarmupMs();
-                    timerHandler.postDelayed(tuneWindowStart, warmup);
-                    timerHandler.postDelayed(tuneStepEnd, warmup + com.limelight.tv.TvAutoTune.MEASURE_MS);
+                    tuneConnectedAtMs = android.os.SystemClock.uptimeMillis();
+                    timerHandler.removeCallbacks(tuneSettleCheck);
+                    timerHandler.postDelayed(tuneSettleCheck, com.limelight.tv.TvAutoTune.currentMinWarmupMs());
                 }
                 updatePipAutoEnter();
                 // Ensure frame-rate hint is applied when streaming starts (some devices need a re-apply)
