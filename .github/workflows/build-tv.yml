@@ -140,13 +140,24 @@ jobs:
       # the "---" line), then how to install
       - name: Write release notes
         env:
+          GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
         run: |
+          # Every change since the last release, newest first (or just this commit's message)
+          PREV=$(gh api "repos/$REPO/releases/latest" --jq .tag_name 2>/dev/null || true)
+          : > changes.txt
+          if [ -n "$PREV" ]; then
+            gh api "repos/$REPO/compare/$PREV...$SHA" \
+              --jq '.commits | reverse | .[] | .commit.message + "\n"' > changes.txt 2>/dev/null || : > changes.txt
+          fi
+          if [ ! -s changes.txt ]; then
+            git log -1 --format=%B > changes.txt
+          fi
           {
             echo "What's new in build ${{ github.run_number }}:"
             echo
-            git log -1 --format=%B | grep -v -E "^(Co-Authored-By|Claude-Session|Signed-off-by):" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'
+            grep -v -E "^(Co-Authored-By|Claude-Session|Signed-off-by):" changes.txt | cat -s | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'
             echo
             echo "---"
             echo "Artemide TV for TCL C7K (MediaTek Pentonic 700 / MT5896), built from ${SHA}."
