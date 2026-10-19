@@ -212,6 +212,10 @@ public final class TvAutoTune {
         public boolean hasHost;
         public double pcFps, pcGapsPerMin, deliveryStallsPerMin, late8Pct;
         public long longestPcGapMs, longestDeliveryStallMs;
+        // Asked for more frames than the screen shows (120 fps), but the PC sent far fewer: the
+        // game or the stream test page drew at a lower rate on the PC, so this tested nothing new
+        public boolean pcLimited;
+        public double realFps;              // the frame rate the PC really sent
         public int runs = 1;                // > 1: the average of that many runs of the same settings
         public boolean staticPicture;
         public double settleSecs = -1;      // wait before measuring
@@ -886,15 +890,20 @@ public final class TvAutoTune {
         }
         final double host = Math.max(0, r.hostMs);
         final double net = Math.max(0, r.rttMs) / 2.0;
-        final double capture = 500.0 / Math.max(1, r.config.fps);
+        // A new picture waits half a frame on average for the next capture, at the rate the PC
+        // really sent (a 120 fps stream from a game drawing 60 fps waits like a 60 fps one)
+        r.realFps = r.hasHost && r.pcFps > 1 ? Math.min(r.config.fps, r.pcFps)
+                : r.arrivedFps > 1 ? Math.min(r.config.fps, r.arrivedFps) : r.config.fps;
+        r.pcLimited = r.config.fps > r.screenHz * 1.1 && r.realFps < r.config.fps * 0.85;
+        final double capture = 500.0 / Math.max(1, r.realFps);
         r.latencyMs = host + net + tvMs + capture;
         r.latency = clamp(100 - (r.latencyMs - LATENCY_FREE_MS) * LATENCY_POINTS_PER_MS);
         r.latencyWhy = String.format(Locale.US,
-                "%.0f = 100 - %.1f x (%.1f ms - %.0f): PC %s + network %.1f ms [round trip %.0f / 2] + TV %.1f ms [%s; decode %.1f, buffer %.1f, max %.0f] + capture wait %.1f ms",
+                "%.0f = 100 - %.1f x (%.1f ms - %.0f): PC %s + network %.1f ms [round trip %.0f / 2] + TV %.1f ms [%s; decode %.1f, buffer %.1f, max %.0f] + capture wait %.1f ms [half a frame at the %.0f fps the PC sent]",
                 r.latency, LATENCY_POINTS_PER_MS, r.latencyMs, LATENCY_FREE_MS,
                 r.hostMs >= 0 ? String.format(Locale.US, "%.1f ms [capture to encoded, max %.1f]", r.hostMs, r.maxHostMs)
                         : "? [the PC sent no timing: counted as 0]",
-                net, r.rttMs, tvMs, tvHow, r.decodeMs, r.leadMs, tvMax, capture);
+                net, r.rttMs, tvMs, tvHow, r.decodeMs, r.leadMs, tvMax, capture, r.realFps);
 
         // Picture: resolution and bits per pixel (0.15 bpp is plenty for HEVC game streaming;
         // AV1 needs about 30 % fewer bits for the same picture, H.264 about 60 % more)
@@ -931,6 +940,10 @@ public final class TvAutoTune {
         final boolean sx = smoothOk(x), sy = smoothOk(y);
         if (sx != sy) {
             return sx;
+        }
+        // ... and a high frame rate test the PC really delivered above one it didn't
+        if (x.pcLimited != y.pcLimited) {
+            return !x.pcLimited;
         }
         return x.total > y.total;
     }
@@ -1157,6 +1170,9 @@ public final class TvAutoTune {
             if (sx != sy) {
                 return sx ? -1 : 1;
             }
+            if (x.pcLimited != y.pcLimited) {
+                return x.pcLimited ? 1 : -1;
+            }
             return Double.compare(y.total, x.total);
         });
         return list;
@@ -1212,7 +1228,13 @@ public final class TvAutoTune {
 
     /** A short note on PC-side trouble in a test (gaps where it captured nothing, late deliveries). */
     private static String pcNote(Result r) {
-        if (!r.ok || !r.hasHost) {
+        if (!r.ok) {
+            return "";
+        }
+        if (r.pcLimited) {
+            return String.format(Locale.US, "  (the PC sent only %.0f fps)", r.realFps);
+        }
+        if (!r.hasHost) {
             return "";
         }
         if (r.pcGapsPerMin >= 6) {
@@ -1252,6 +1274,16 @@ public final class TvAutoTune {
         }
         if (!av1Tested) {
             b.append("(No AV1 test: this TV has no AV1 hardware decoder.)\n");
+        }
+        for (Result r : formats) {
+            if (r.ok && r.pcLimited) {
+                b.append(String.format(Locale.US,
+                        "Note: in the %d fps tests the PC sent only about %.0f fps, so they ranked last. The game or the stream test page " +
+                                "drew at %.0f on the PC: the page must be on Apollo's virtual display running at %d Hz (its corner then says about %d fps on the PC), " +
+                                "a game must be allowed %d fps.\n",
+                        r.config.fps, r.realFps, r.realFps, r.config.fps, r.config.fps, r.config.fps));
+                break;
+            }
         }
         {
             double sum = 0, max = 0;

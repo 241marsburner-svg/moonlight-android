@@ -9,33 +9,69 @@
   Every frame moves a busy tile pattern, so the PC's encoder works about as hard as in a game and
   every test of the auto-tune sees the same picture. The ladder lights one cell per frame: a
   skipped cell on the TV is a dropped frame, a cell lit twice a repeated one.
+  It draws as many frames as the browser gives it (the refresh rate of the screen it is on: for a
+  120 fps stream that must be Apollo's virtual display at 120 Hz) and says how many it drew and
+  how long its longest frame took, so a stall on the PC itself shows in the picture.
+  Drawing costs well under a millisecond a frame (the tiles are a tiny image scaled up), so the
+  page can't be what limits the frame rate.
   Idea from moonlight-tcl's tools/framerate-test.html (pabragin/moonlight-tcl, GPLv3).
 -->
 <style>
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: none; }
   canvas { display: block; width: 100vw; height: 100vh; }
   #help { position: fixed; left: 16px; bottom: 12px; color: #9aa; font: 15px system-ui, "Segoe UI", sans-serif;
-          background: rgba(0,0,0,.6); padding: 6px 10px; }
+          background: rgba(0,0,0,.6); padding: 6px 10px; max-width: 70em; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="help">F or click: full screen · L: lighter picture · Space: pause · this text hides after 10 s</div>
+<div id="help">F or click: full screen · L: lighter picture · Space: pause · this text hides after 15 s.<br>
+The corner shows the frames per second the browser draws here. For a 120 fps stream it must say about 120:
+if it says 60, the browser is drawing at 60 (move it to Apollo's virtual display, check that the display runs at 120 Hz).
+"Longest frame" in red means the PC itself stalled.</div>
 <script>
 (function () {
   var canvas = document.getElementById('c');
   var ctx = canvas.getContext('2d', { alpha: false });
   var help = document.getElementById('help');
-  var frame = 0, paused = false, light = false, last = performance.now(), fps = 0, count = 0, since = last;
+  var frame = 0, paused = false, light = false;
+  var last = 0, count = 0, since = 0, fps = 0, worst = 0, worstShown = 0;
 
-  function resize() {
+  // The tiles: one pixel per tile in a small canvas, scaled up without smoothing
+  var tiles = document.createElement('canvas');
+  var tctx = tiles.getContext('2d', { alpha: false });
+  var img = null, px = null, cols = 0, rows = 0, cell = 28;
+
+  // A fixed palette (no colour strings made while drawing)
+  var palette = new Uint32Array(512);
+  (function () {
+    var c = document.createElement('canvas');
+    c.width = 1; c.height = 1;
+    var x = c.getContext('2d', { willReadFrequently: true });
+    for (var i = 0; i < palette.length; i++) {
+      x.fillStyle = 'hsl(' + ((i * 137) % 360) + ',65%,' + (14 + (i * 7) % 20) + '%)';
+      x.fillRect(0, 0, 1, 1);
+      var d = x.getImageData(0, 0, 1, 1).data;
+      palette[i] = (255 << 24) | (d[2] << 16) | (d[1] << 8) | d[0]; // little endian RGBA
+    }
+  })();
+
+  function setup() {
     var dpr = window.devicePixelRatio || 1;
     canvas.width = Math.round(innerWidth * dpr);
     canvas.height = Math.round(innerHeight * dpr);
+    var s = canvas.width / 1920;
+    cell = Math.max(16, Math.round((light ? 64 : 28) * s));
+    cols = Math.ceil(canvas.width / cell) + 2;
+    rows = Math.ceil(canvas.height / cell) + 2;
+    tiles.width = cols;
+    tiles.height = rows;
+    img = tctx.createImageData(cols, rows);
+    px = new Uint32Array(img.data.buffer);
   }
-  addEventListener('resize', resize);
-  resize();
-  setTimeout(function () { help.style.display = 'none'; }, 10000);
+  addEventListener('resize', setup);
+  setup();
+  setTimeout(function () { help.style.display = 'none'; }, 15000);
 
   function fullscreen() {
     if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
@@ -45,7 +81,7 @@
   addEventListener('click', fullscreen);
   addEventListener('keydown', function (e) {
     if (e.key === 'f' || e.key === 'F') fullscreen();
-    if (e.key === 'l' || e.key === 'L') light = !light;
+    if (e.key === 'l' || e.key === 'L') { light = !light; setup(); }
     if (e.key === ' ') paused = !paused;
   });
 
@@ -58,43 +94,65 @@
 
   function draw(now) {
     requestAnimationFrame(draw);
-    if (paused) return;
+    if (paused) { last = 0; return; }
+    // The browser's own frame rate and its longest frame over the last second
+    if (last > 0) {
+      var dt = now - last;
+      if (dt > worst) worst = dt;
+    }
+    last = now;
     frame++;
     count++;
-    if (now - since >= 1000) { fps = count * 1000 / (now - since); count = 0; since = now; }
-    last = now;
+    if (since === 0) since = now;
+    if (now - since >= 1000) {
+      fps = count * 1000 / (now - since);
+      worstShown = worst;
+      count = 0; worst = 0; since = now;
+    }
 
     var W = canvas.width, H = canvas.height, s = W / 1920;
     // Busy moving texture (game-like encoder load): tiles drift diagonally, colours shift
-    var cell = Math.max(16, Math.round((light ? 64 : 28) * s));
-    var off = (frame * 5) % cell;
-    for (var y = -cell; y < H; y += cell) {
-      for (var x = -cell; x < W; x += cell) {
-        var v = hash((x / cell) | 0, (y / cell) | 0, frame >> 2);
-        ctx.fillStyle = 'hsl(' + (v % 360) + ',65%,' + (25 + (v >>> 9) % 35) + '%)';
-        ctx.fillRect(x + off, y + off, cell - 1, cell - 1);
+    // every 4 frames
+    var seed = frame >> 2;
+    for (var y = 0, i = 0; y < rows; y++) {
+      for (var x = 0; x < cols; x++, i++) {
+        px[i] = palette[hash(x, y, seed) & 511];
       }
     }
-    ctx.fillStyle = 'rgba(0,0,0,0.45)';
-    ctx.fillRect(0, 0, W, H);
+    tctx.putImageData(img, 0, 0);
+    var off = (frame * 5) % cell - cell;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(tiles, 0, 0, cols, rows, off, off, cols * cell, rows * cell);
+    // Grid lines between the tiles (fine detail for the encoder)
+    ctx.fillStyle = '#000';
+    for (var gx = 0; gx <= cols; gx++) ctx.fillRect(off + gx * cell - 1, 0, 1, H);
+    for (var gy = 0; gy <= rows; gy++) ctx.fillRect(0, off + gy * cell - 1, W, 1);
 
     // Ladder: one cell per frame
     var cells = 60, cw = W / cells;
-    for (var i = 0; i < cells; i++) {
-      ctx.fillStyle = i === frame % cells ? '#fff' : '#222';
-      ctx.fillRect(i * cw + 2 * s, H * 0.44, cw - 4 * s, H * 0.12);
-    }
+    ctx.fillStyle = '#222';
+    ctx.fillRect(0, H * 0.44, W, H * 0.12);
+    ctx.fillStyle = '#000';
+    for (var k = 0; k <= cells; k++) ctx.fillRect(k * cw - 2 * s, H * 0.44, 4 * s, H * 0.12);
+    ctx.fillStyle = '#fff';
+    ctx.fillRect((frame % cells) * cw + 2 * s, H * 0.44, cw - 4 * s, H * 0.12);
     // Bar moving a fixed step per frame: smooth when every frame arrives
     var bw = 80 * s, bx = (frame * 14 * s) % (W + bw) - bw;
     ctx.fillStyle = '#4af';
     ctx.fillRect(bx, H * 0.64, bw, H * 0.12);
-    // Counter and the browser's own frame rate (if this is below the stream rate, the PC is the limit)
+    // Counter, the browser's own frame rate and its longest frame (if the rate is below the
+    // stream's, or the longest frame is long, the PC is the limit)
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(24 * s, 24 * s, 900 * s, 270 * s);
     ctx.fillStyle = '#fff';
     ctx.textBaseline = 'top';
     ctx.font = Math.round(120 * s) + 'px system-ui, sans-serif';
     ctx.fillText(String(frame % 1000).padStart(3, '0'), 40 * s, 40 * s);
     ctx.font = Math.round(40 * s) + 'px system-ui, sans-serif';
+    var interval = fps > 0 ? 1000 / fps : 16.7;
     ctx.fillText(fps.toFixed(1) + ' fps on the PC', 40 * s, 190 * s);
+    ctx.fillStyle = worstShown > interval * 2.5 ? '#f55' : '#9c9';
+    ctx.fillText('longest frame ' + worstShown.toFixed(0) + ' ms', 40 * s, 240 * s);
   }
   requestAnimationFrame(draw);
 })();

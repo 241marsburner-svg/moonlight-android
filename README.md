@@ -64,7 +64,9 @@ that arrive per refresh. 120 fits 60 Hz exactly (two frames per refresh); **90 f
 
 To make 120 fps usable:
 - The game (or desktop) must really run at 120 fps on the PC, and Apollo's virtual display at
-  120 Hz. If the PC only delivers 60 fps, a 120 fps stream gains nothing.
+  120 Hz. If the PC only delivers 60 fps, a 120 fps stream gains nothing. The stream test page
+  shows the rate it really draws in its corner, and the auto-tune marks 120 fps tests where the
+  PC sent fewer frames (and ranks them last).
 - TV game and TV smooth group the frames into refreshes by when the PC captured them (every frame
   carries that time). Every refresh then moves the picture on by the same amount. Without this,
   a frame arriving a millisecond early or late decides which refresh it lands on, and the picture
@@ -159,7 +161,11 @@ whether it held frames back. The full log goes to `Download/ArtemideTV` on the T
 
 Both files are on every [release](https://github.com/241marsburner-svg/moonlight-android/releases):
 - `stream-test.html`: a steady moving picture for the auto-tune. Press F for full screen,
-  L for a lighter version.
+  L for a lighter version. Its corner shows how many frames per second the browser really
+  draws on the PC, and its longest frame (red when the PC itself stalled). For a 120 fps stream
+  it must say about 120: the browser has to be on Apollo's virtual display, running at 120 Hz.
+  It is fine for testing 120 fps, but it loads the GPU less than a game, so it can't show
+  whether a game holds 120 fps or slows the encoder down.
 - `latency-test.html`: for the latency test. Open it full screen in the stream, turn on
   *Settings → Latency test*, and press A, B, X or Y about 20 times.
 
