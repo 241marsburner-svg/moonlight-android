@@ -128,7 +128,7 @@ with the key in `tv-signing/` (see the README there), so every build installs as
 over the previous one.
 
 Branches:
-- `tv-c7k`: this TV build (the default branch)
+- `tv-c7k`: this TV build
 - `moonlight-noir`: Artemide's main branch as it was when this fork was made (the TV build is
   based on a newer Artemide version)
 - `ci-logs`: build logs when a CI build fails

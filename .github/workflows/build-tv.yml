@@ -3,6 +3,9 @@ name: Build Artemide TV
 on:
   push:
     branches: [ tv-c7k ]
+    # Text-only changes don't need a new build (and the app would offer it as an update)
+    paths-ignore:
+      - '**/*.md'
   workflow_dispatch:
 
 permissions:
