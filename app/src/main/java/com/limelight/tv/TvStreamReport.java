@@ -41,8 +41,10 @@ public final class TvStreamReport {
             LimeLog.warning("Artemide TV: could not save the stream report: " + t);
         }
         // The report with the stream's second-by-second timeline, for "Upload log"
-        TvLog.writePrivate(context, STREAM_FILE, "STREAM REPORT\n" + text + "\n\nTIMELINE (one line per second)\n" +
-                TvTimeline.text());
+        TvLog.writePrivate(context, STREAM_FILE, "STREAM REPORT\n" + text +
+                "\n\nSETTINGS IN USE (what the stream really ran with, including what the app changed)\n" +
+                TvStreamSettings.text() +
+                "\nTIMELINE (one line per second)\n" + TvTimeline.text());
     }
 
     /** The last stream's report and timeline, or null. */

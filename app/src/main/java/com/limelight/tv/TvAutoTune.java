@@ -113,6 +113,7 @@ public final class TvAutoTune {
         public String smoothWhy = "", latencyWhy = "", pictureWhy = "";
         public String report;
         public String timeline;
+        public String settings; // what the stream really ran with (TvStreamSettings)
 
         Result(Config config) {
             this.config = config;
@@ -131,7 +132,7 @@ public final class TvAutoTune {
     private static int[] audioStart;
     private static String startedAt = "";
     private static String abortReason;
-    private static String deviceInfo = "";
+    private static volatile String deviceInfo = "";
     private static boolean av1Tested;
 
     // ---------------- Plan ----------------
@@ -194,11 +195,18 @@ public final class TvAutoTune {
         abortReason = null;
         startedAt = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(new Date());
         buildPlan(PreferenceConfiguration.readPreferences(context));
-        try {
-            deviceInfo = TvDeviceInfo.describeAll(context.getApplicationContext());
-        } catch (Throwable t) {
-            deviceInfo = "(device info failed: " + t + ")\n";
-        }
+        // The decoder list and screen modes take a moment to read: not on the UI thread
+        deviceInfo = "";
+        final Context app = context.getApplicationContext();
+        new Thread(() -> {
+            String info;
+            try {
+                info = TvDeviceInfo.describeAll(app);
+            } catch (Throwable t) {
+                info = "(device info failed: " + t + ")\n";
+            }
+            deviceInfo = info;
+        }, "TvAutoTuneInfo").start();
         LimeLog.info("Artemide TV auto-tune: " + plan.size() + " tests" + (av1Tested ? " (with AV1)" : " (no AV1 decoder)"));
     }
 
@@ -314,6 +322,7 @@ public final class TvAutoTune {
             r.display = TvDiagnostics.describeDisplay(context);
         } catch (Throwable ignored) { }
         r.timeline = TvTimeline.text();
+        r.settings = TvStreamSettings.text();
         if (!measuring || windowStart == null) {
             r.ok = false;
             r.failure = "no measurement";
@@ -345,6 +354,7 @@ public final class TvAutoTune {
         r.failure = why;
         r.decoder = TvDiagnostics.decoderName();
         r.timeline = TvTimeline.text();
+        r.settings = TvStreamSettings.isEmpty() ? null : TvStreamSettings.text();
         score(r);
         results.add(r);
         stepDone = true;
@@ -596,16 +606,30 @@ public final class TvAutoTune {
                     r.codecUsed, r.decoder,
                     !r.ok ? r.failure : (r.staticPicture ? "static picture: compare with care" : "")));
         }
-        b.append("\nPER TEST: STREAM REPORT AND TIMELINE (one line per second)\n");
+        b.append("\nPER TEST: STREAM REPORT, SETTINGS IN USE AND TIMELINE (one line per second)\n");
         n = 1;
+        String firstSettings = null;
+        int firstSettingsTest = 0;
         for (Result r : results) {
-            b.append("--- Test ").append(n++).append(": ").append(r.config.describe()).append('\n');
+            b.append("--- Test ").append(n).append(": ").append(r.config.describe()).append('\n');
             b.append("Screen at the end: ").append(r.display).append('\n');
             b.append(r.report != null ? r.report : (r.failure != null ? "failed: " + r.failure : "-")).append("\n");
+            if (r.settings != null) {
+                if (firstSettings == null) {
+                    firstSettings = r.settings;
+                    firstSettingsTest = n;
+                    b.append("Settings in use:\n").append(r.settings);
+                } else {
+                    final String diff = TvStreamSettings.difference(r.settings, firstSettings);
+                    b.append("Settings in use: as in test ").append(firstSettingsTest).append(", except:\n")
+                            .append(diff.isEmpty() ? "(nothing)\n" : diff);
+                }
+            }
             if (r.timeline != null) {
                 b.append("Timeline:\n").append(r.timeline);
             }
             b.append('\n');
+            n++;
         }
         b.append("\n").append(deviceInfo);
         return b.toString();

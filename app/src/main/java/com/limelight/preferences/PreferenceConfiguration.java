@@ -375,6 +375,22 @@ public class PreferenceConfiguration {
     public static boolean isTvPacing(int mode) {
         return mode == FRAME_PACING_TV_SMOOTH || mode == FRAME_PACING_TV_GAME;
     }
+
+    /** The frame pacing mode's name as the settings show it. */
+    public static String describeFramePacing(int mode) {
+        switch (mode) {
+            case FRAME_PACING_TV_SMOOTH: return "TV smooth";
+            case FRAME_PACING_TV_GAME: return "TV game";
+            case FRAME_PACING_BALANCED: return "Balanced";
+            case FRAME_PACING_MIN_LATENCY: return "Lowest latency";
+            case FRAME_PACING_MAX_SMOOTHNESS: return "Smoothest";
+            case FRAME_PACING_CAP_FPS: return "Balanced + FPS limit";
+            case FRAME_PACING_GPU_RAW: return "GPU raw";
+            case FRAME_PACING_WARP: return "Warp";
+            case FRAME_PACING_WARP2: return "Warp 2";
+            default: return "? (" + mode + ")";
+        }
+    }
     public static final String RES_360P = "640x360";
     public static final String RES_480P = "854x480";
     public static final String RES_720P = "1280x720";

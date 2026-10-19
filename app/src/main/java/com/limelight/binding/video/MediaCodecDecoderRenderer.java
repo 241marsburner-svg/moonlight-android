@@ -1045,6 +1045,17 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             MediaFormat __outF = videoDecoder.getOutputFormat();
             LimeLog.info("Decoder input format: " + (__inF != null ? __inF.toString() : "<null>"));
             LimeLog.info("Decoder output format: " + (__outF != null ? __outF.toString() : "<null>"));
+            if (BuildConfig.TV_BUILD) {
+                // Artemide TV: what was asked of the decoder and what it says it took
+                com.limelight.tv.TvStreamSettings.put("Decoder format asked", String.valueOf(format));
+                com.limelight.tv.TvStreamSettings.put("Decoder format accepted", __inF != null ? __inF.toString() : "-");
+                com.limelight.tv.TvStreamSettings.put("Decoder output", __outF != null ? __outF.toString() : "-");
+                com.limelight.tv.TvStreamSettings.put("Decoder mode", (useAsyncCodec ? "async callbacks" : "sync") +
+                        " · direct submit " + (coldCfg.directSubmit ? "yes" : "no") +
+                        " · loss recovery without keyframes (RFI) " + (coldCfg.refFrameInvalidationActive ? "yes" : "no") +
+                        " · adaptive playback " + (coldCfg.adaptivePlayback ? "yes" : "no") +
+                        " · patient input " + (prefs != null && prefs.patientDecoderInput ? "yes" : "no"));
+            }
         } catch (Throwable t) {
             LimeLog.info("Decoder formats unavailable after start");
         }

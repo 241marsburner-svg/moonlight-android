@@ -635,6 +635,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         // Artemide TV: make room in the TV's memory (other apps' background processes) and
         // follow the chip's temperature for the stream report
         if (BuildConfig.TV_BUILD) {
+            com.limelight.tv.TvStreamSettings.reset();
             final Context appContext = getApplicationContext();
             if (prefConfig.tvFreeMemory) {
                 new Thread(() -> com.limelight.binding.video.TvDiagnostics.setMemoryInfo(
@@ -650,6 +651,8 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         // Artemide TV auto-tune: a test stream runs with the test's settings (nothing is saved)
         if (BuildConfig.TV_BUILD && com.limelight.tv.TvAutoTune.isStepActive()) {
             com.limelight.tv.TvAutoTune.applyStepOverrides(prefConfig);
+            com.limelight.tv.TvStreamSettings.put("Auto-tune test", com.limelight.tv.TvAutoTune.currentLabel() +
+                    " (these settings replace the saved ones for this test only)");
             timerHandler.postDelayed(tuneConnectTimeout, com.limelight.tv.TvAutoTune.CONNECT_TIMEOUT_MS);
         }
 
@@ -885,6 +888,10 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 lowLatencyWifiLock = wifiMgr.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "Moonlight Low Latency Lock");
                 lowLatencyWifiLock.setReferenceCounted(false);
                 lowLatencyWifiLock.acquire();
+            }
+            if (BuildConfig.TV_BUILD) {
+                com.limelight.tv.TvStreamSettings.put("Wi-Fi locks", "high performance" +
+                        (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ? " + low latency" : ""));
             }
         } catch (SecurityException e) {
             // Some Samsung Galaxy S10+/S10e devices throw a SecurityException from
@@ -1129,6 +1136,16 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 .setColorRange(decoderRenderer.getPreferredColorRange())
                 .setPersistGamepadsAfterDisconnect(!prefConfig.multiController)
                 .build();
+
+        // Artemide TV: what this stream really asks for and uses, for the logs
+        if (BuildConfig.TV_BUILD) {
+            com.limelight.tv.TvStreamSettings.put("Asked of the PC",
+                    com.limelight.tv.TvStreamSettings.describeStreamConfig(config, isMetered, prefConfig.bitrate));
+            com.limelight.tv.TvStreamSettings.put("HDR", willStreamHdr ? "on" : "off");
+            com.limelight.tv.TvStreamSettings.put("Frame pacing", PreferenceConfiguration.describeFramePacing(prefConfig.framePacing) +
+                    (prefConfig.tvAggressiveTiming ? " (aggressive timing)" : ""));
+            com.limelight.tv.TvStreamSettings.setSettingsObject(prefConfig);
+        }
 
         // Initialize the connection
         conn = new NvConnection(getApplicationContext(),
@@ -1719,6 +1736,9 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                                 InputDevice.SOURCE_CLASS_POINTER |
                                 InputDevice.SOURCE_CLASS_POSITION |
                                 InputDevice.SOURCE_CLASS_TRACKBALL);
+                if (BuildConfig.TV_BUILD) {
+                    com.limelight.tv.TvStreamSettings.put("Controller input", "unbuffered (each event right away, whole window)");
+                }
             } catch (Throwable t) {
                 LimeLog.warning("Unbuffered input request failed: " + t);
             }
@@ -1873,6 +1893,10 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
             LimeLog.info("Best display mode: "+bestMode.getPhysicalWidth()+"x"+
                     bestMode.getPhysicalHeight()+"x"+bestMode.getRefreshRate());
 
+            // Artemide TV: which mode the TV was in and which one the stream asks for
+            String tvModeHow = "already the best mode";
+            final Display.Mode tvModeBefore = currentDisplay.getMode();
+
             // Only apply new window layout parameters if we've actually changed the display mode
             if (currentDisplay.getMode().getModeId() != bestMode.getModeId()) {
                 // If we only changed refresh rate and we're on an OS that supports Surface.setFrameRate()
@@ -1885,13 +1909,22 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                     // Apply the display mode change
                     windowLayoutParams.preferredDisplayModeId = bestMode.getModeId();
                     getWindow().setAttributes(windowLayoutParams);
+                    tvModeHow = "switched (preferred display mode)";
                 }
                 else {
                     LimeLog.info("Using setFrameRate() instead of preferredDisplayModeId due to matching resolution");
+                    tvModeHow = "refresh rate left to the frame-rate hint";
                 }
             }
             else {
                 LimeLog.info("Current display mode is already the best display mode");
+            }
+            if (BuildConfig.TV_BUILD) {
+                com.limelight.tv.TvStreamSettings.put("Display mode", String.format(java.util.Locale.US,
+                        "%dx%d @ %.2f Hz -> %dx%d @ %.2f Hz (%s; enforce display mode %s)",
+                        tvModeBefore.getPhysicalWidth(), tvModeBefore.getPhysicalHeight(), tvModeBefore.getRefreshRate(),
+                        bestMode.getPhysicalWidth(), bestMode.getPhysicalHeight(), bestMode.getRefreshRate(),
+                        tvModeHow, prefConfig.enforceDisplayMode ? "on" : "off"));
             }
 
             displayRefreshRate = bestMode.getRefreshRate();
@@ -2052,6 +2085,9 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
             lastAppliedSurfaceFrameRate = desiredFrameRate;
             LimeLog.info("Applied Surface frame-rate hint: " + desiredFrameRate + " fps");
+            if (BuildConfig.TV_BUILD) {
+                com.limelight.tv.TvStreamSettings.put("Frame-rate hint to the TV", desiredFrameRate + " fps (fixed source)");
+            }
         } catch (Throwable t) {
             LimeLog.warning("Surface.setFrameRate() failed: " + t);
         }
@@ -4220,6 +4256,9 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
                 if (prefConfig.preventPacketLoss) {
                     timerHandler.postDelayed(backgroundPing, 1000);
+                    if (BuildConfig.TV_BUILD) {
+                        com.limelight.tv.TvStreamSettings.put("Wi-Fi keep-alive", "an empty packet to the PC every 10 ms");
+                    }
                 }
 
                 // Artemide TV: give the native streaming threads real-time-ish priorities

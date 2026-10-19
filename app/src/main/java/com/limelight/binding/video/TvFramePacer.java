@@ -38,6 +38,11 @@ final class TvFramePacer {
     private static final long LEGACY_PIPELINE_EXTRA_NS = 4_000_000L;
     // The adaptive margin grows by a quarter refresh per step, at most this often
     private static final long ADAPT_COOLDOWN_NS = 300_000_000L;
+    // Drops right after a (re)start (display mode switch, decoder warming up, first keyframe)
+    // say nothing about the TV's normal timing: they must not raise the margin for the whole
+    // stream, which would add latency to every frame from then on
+    private static final long ADAPT_WARMUP_NS = 3_000_000_000L;
+    private long resetAtNs;
 
     // TV game mode: at most one frame of buffer, trimmed quickly, no extra pipeline margin
     // Game mode buffer limit adapts between these: it grows by a frame when frames keep having
@@ -107,6 +112,7 @@ final class TvFramePacer {
     }
 
     synchronized void reset() {
+        resetAtNs = System.nanoTime();
         nextIdealNs = 0L;
         lastSlotNs = 0L;
         windowStartNs = 0L;
@@ -364,7 +370,8 @@ final class TvFramePacer {
             // Most likely those frames were queued after SurfaceFlinger's deadline for their
             // refresh: plan further ahead from now on.
             final long maxExtra = (lastPeriodNs * 3) / 2;
-            if (adaptiveExtraNs < maxExtra && (lastAdaptNs == 0L || renderNs - lastAdaptNs >= ADAPT_COOLDOWN_NS)) {
+            if (renderNs - resetAtNs >= ADAPT_WARMUP_NS && adaptiveExtraNs < maxExtra &&
+                    (lastAdaptNs == 0L || renderNs - lastAdaptNs >= ADAPT_COOLDOWN_NS)) {
                 adaptiveExtraNs = Math.min(maxExtra, adaptiveExtraNs + lastPeriodNs / 4);
                 lastAdaptNs = renderNs;
                 TvDiagnostics.setAdaptiveMarginNs(adaptiveExtraNs);

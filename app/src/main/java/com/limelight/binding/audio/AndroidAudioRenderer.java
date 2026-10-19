@@ -158,6 +158,7 @@ private static void bumpAudioPriority() {
         if (PreferenceConfiguration.AUDIO_BUFFER_OFF.equals(bufferMode)) {
             audioOff = true;
             TvDiagnostics.setAudioTrackInfo("off (sound plays on the PC)", 0);
+            com.limelight.tv.TvStreamSettings.put("Audio stream", "off on the TV (buffer setting \"off\": the PC plays its sound)");
             LimeLog.info("Audio output disabled: sound plays on the host PC");
             return 0;
         }
@@ -373,6 +374,10 @@ private static void bumpAudioPriority() {
             }
             final String mode = (tvMode ? "cushion " : "") + (lowLatencyTrack ? "low-latency" : "normal");
             TvDiagnostics.setAudioTrackInfo(mode, bufferMs);
+            com.limelight.tv.TvStreamSettings.put("Audio stream", sampleRate + " Hz · " +
+                    audioConfiguration.channelCount + " channels · " +
+                    (samplesPerFrame * 1000 / Math.max(1, sampleRate)) + " ms packets · buffer setting \"" + bufferMode +
+                    "\" · track " + mode + (enableAudioFx ? " · system audio effects on" : ""));
         } catch (Throwable ignored) {}
 
         return 0;

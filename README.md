@@ -1,84 +1,146 @@
-# Artemis Android
+# Artemide TV
 
-Previously named Moonlight Noir
+A game streaming app for the **TCL C7K** (Google TV, MediaTek Pentonic 700 / MT5896), tuned for
+the lowest delay and a picture that does not stutter. It streams games and the desktop from a
+Windows PC running [Apollo](https://github.com/ClassicOldSong/Apollo) or
+[Sunshine](https://github.com/LizardByte/Sunshine).
 
-An open source client for [Apollo](https://github.com/ClassicOldSong/Apollo)/[Sunshine](https://github.com/LizardByte/Sunshine).
+It is a personal build of [Artemide](https://github.com/derflacco/moonlight-android) by
+derflacco, a performance fork of [Artemis](https://github.com/ClassicOldSong/moonlight-android),
+which is itself a fork of [Moonlight](https://github.com/moonlight-stream/moonlight-android).
+Everything those apps do still works. This build adds what a TV needs on top. It installs next
+to other Moonlight-based apps (app ID `com.limelight.artemidetv`). Other Android TVs with
+MediaTek chips may work just as well, but it is only tested on the C7K.
 
-Artemis Android will allow you to stream your collection of games from your Windows PC to your Android device,
-whether in your own home or over the internet.
+## Install
 
-Artemis is currently the best fork of Moonlight with loads of optimizations for office usage.
+**First time**, on the TV: install the **Downloader** app from the Play Store, allow it to
+install apps when it asks, and open this link in it:
 
-A more seamless experience with virtual display will be Artemis paired with [Apollo](https://github.com/ClassicOldSong/Apollo).
+    https://github.com/241marsburner-svg/moonlight-android/releases/latest/download/ArtemideTV.apk
 
-# Features
+**Updates** come from inside the app: **Settings → Artemide TV → Check for updates**. The app
+also asks by itself when a new build is out (at most every 6 hours). The first time, the TV
+asks you to let Artemide TV install apps. If that page does not open, the switch is under
+*TV Settings → Privacy (or Apps) → Security & restrictions → Unknown sources*. Your settings
+and the pairing with your PC are kept.
 
-If you switch back to the main stream version, you'll be missing the following awesome features which are very unlikely to be added there:
+`ArtemideTV.apk` works on any ARM TV. The `arm64-v8a` and `armeabi-v7a` files on the
+[releases page](https://github.com/241marsburner-svg/moonlight-android/releases) are smaller
+versions of the same app.
 
-1. Custom virtual buttons with import and export support.
-2. [Custom resolutions](https://github.com/moonlight-stream/moonlight-android/pull/1349).
-3. Custom bitrates.
-4. [Multiple mouse mode switching](https://github.com/moonlight-stream/moonlight-android/pull/1304) (normal mouse, [multi-touch](https://github.com/moonlight-stream/moonlight-android/pull/1364), touchpad, disabled, local cursor mode).
-5. Optimized virtual gamepad skins and free joystick.
-6. External monitor mode.
-7. Joycon D-pad support.
-8. Simplified performance information display.
-9. [Game back menu](https://github.com/moonlight-stream/moonlight-android/pull/1171).
-10. Custom shortcut commands.
-11. Easy soft keyboard switching.
-12. Portrait mode.
-13. Display on top mode, useful for foldable phones.
-14. [Virtual touchpad space and sensitivity adjustment](https://github.com/moonlight-stream/moonlight-android/issues/1348#issuecomment-2236344729) for playing right-click view games, such as Warcraft.
-15. Force use device's own vibration motor (in case your gamepad's vibration is not effective).
-16. Gamepad debugging page to view gamepad vibration and gyroscope information, as well as Android kernel version information.
-17. Trackpad tap/scrolling support
-18. Natural track pad mode with touch screen
-19. Non-QWERTY keyboard layout support
-20. Quick Meta key with physical BACK button
-21. Frame rate lock fix for some devices
-22. Video scale mode: Fit/Fill/Stretch
-23. View pan/zoom support
-24. Rotate screen in-game
-25. Add option to quit app directly
-26. Samsung DeX scrolling support
-27. Proper click/scroll/right-click for trackpad on generic Android tablet when using local cursor
-28. Virtual Display integration with [Apollo](https://github.com/ClassicOldSong/Apollo)
-29. Server Command integration with [Apollo](https://github.com/ClassicOldSong/Apollo)
-30. Clipboard sync (requires Apollo)
-31. SBS 3D for external Displays (Using AI MiDaS v2 Lite)
+## Best settings to start with
 
-# Disclaimer
+Open **Settings → Use the recommended TV settings**. That sets:
 
-This is the `go away` version of Moonlight Android.
+| Setting | Value | Why |
+|---|---|---|
+| Resolution / frame rate | 1440p, 60 FPS | This chip decodes 1440p in about 7 ms against 13 ms for 4K, and the TV scales it to the panel |
+| Video codec | HEVC | Proven on this TV; the auto-tune now also tests AV1 |
+| Bitrate | 80 Mbps on fast Wi-Fi, 60 or 40 on a slower link | 100 Mbps stuttered over the C7K's Wi-Fi in the auto-tune; its Ethernet port is only 100 Mbit |
+| Frame pacing | TV game | Smallest buffer that still hides Wi-Fi bunching |
+| Ask the TV for game mode | On | The TV's own picture processing otherwise adds a lot of delay |
+| Performance overlay | Off | Anything drawn over the video costs this TV about 25 ms per frame; the stream report after each stream has the same figures |
+| Free up TV memory before each stream | On | Ends other apps' background processes (the TV has 2.4 GB of RAM) |
+| Stream report after each stream | On | Costs nothing noticeable, shows what went wrong |
 
-I got kicked from Moonlight and Sunshine's Discord server literally for helping people out.
+Then let the **auto-tune** find what works best on your network (below). Audio: *TV adaptive*
+is the default. Choose *Off* if you listen on a headset at the PC.
 
-This is what I got for finding a bug, opened an issue, getting no response, troubleshoot myself, fixed the issue myself, shared it by PR to the main repo hoping my efforts can help someone else during the maintainance gap.
+On the PC (Apollo/Sunshine):
+- connect the PC to the router by cable, and the TV over 5 GHz Wi-Fi (or cable)
+- on an Intel Arc GPU, set the QuickSync preset to *veryfast* for the lowest encoding delay
+- cap the game at the stream's frame rate (60) with its own limiter, so frames come evenly
 
-Yes, I'm going away. Fixes and improvements on this fork are not necessarily be merged to the main repo either. I have also started [a fork of Sunshine called Apollo](https://github.com/ClassicOldSong/Apollo) and will add useful features that will never get merged by the main repo shortly. [Apollo](https://github.com/ClassicOldSong/Apollo) and [Moonlight Noir](https://github.com/ClassicOldSong/moonlight-android) will no longer be compatible with OG Sunshine and OG Moonlight eventually, but they'll work even better with much more carefully designed features.
+## What this build adds
 
-The main repo had stayed silent for 5 months, with nobody actually responding to issues, and people are getting totally no help besides the limited FAQ in their Discord server. I tried to answer issues and questions, solve problems within my ablilty but I got kicked out just for helping others.
+**Picture and delay**
+- *TV game* and *TV smooth* frame pacing. Each frame is given its own refresh of the TV's
+  screen, so frames that arrive in a bunch over Wi-Fi are shown one per refresh instead of being
+  dropped. TV game keeps one frame of buffer (up to three while Wi-Fi delivers bigger bunches);
+  TV smooth keeps up to three, for video.
+- The MediaTek decoder is set up with the low-latency options it really accepts. It also gets
+  a bigger input buffer, so a large keyframe after packet loss no longer ends the stream.
+- A newer streaming core (moonlight-common-c) with fixes for loss recovery and faster error
+  correction, plus patches from [moonlight-tcl](https://github.com/pabragin/moonlight-tcl).
+- Raised priorities and Android performance hints for the streaming threads, unbuffered
+  controller input, and Wi-Fi that is kept awake between frames.
+- The TV is switched to the matching display mode and asked for its game picture mode.
+- Audio that keeps a small, self-adjusting cushion, so Wi-Fi hiccups don't crackle.
 
-**PRs for feature improvements are welcomed here unlike the main repo, your ideas are more likely to be appreciated and your efforts are actually being respected. We welcome people who can and willing to share their efforts, helping yourselves and other people in need.**
+**On the TV remote**
+- Back opens the stream menu (it used to go to the PC).
+- The auto-tune starts from the app list: hold OK on an app (e.g. Desktop) → *Auto-tune*.
 
-**Update**: They have contacted me and apologized for this incident, but the fact it **happened** still motivated me to start my own fork.
+**Measuring and fixing**
+- **Stream report** after each stream: frames shown, hitches, network pauses, loss, round trip,
+  decoder and audio figures, and the TV's memory and temperature.
+- **Auto-tune**: about 11 short test streams (resolutions, frame rates, bitrates, HEVC against
+  AV1, both pacing modes), each scored for *smoothness*, *latency* and *picture*. At the end you
+  can use the best one or pick one yourself. *Details* shows how each score came about.
+- **Latency test**: button-to-screen time, with `latency-test.html` open on the PC.
+- **Upload log**: puts everything measured into one log, removes IP and MAC addresses,
+  keys and IDs, uploads it to a paste site, and shows a link and QR code you can send on.
+  The log includes the settings each stream really used.
 
-## Downloads
-* [Download APK directly](https://github.com/ClassicOldSong/moonlight-android/releases)
-* [Use Obtainium](https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22com.limelight.noir%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FClassicOldSong%2Fmoonlight-android%22%2C%22author%22%3A%22ClassicOldSong%22%2C%22name%22%3A%22Artemis%22%2C%22additionalSettings%22%3A%22%7B%5C%22apkFilterRegEx%5C%22%3A%5C%22nonRoot%5C%22%2C%5C%22matchGroutToUse%5C%22%3A%5C%22%241%5C%22%2C%5C%22versionExtractionRegEx%5C%22%3A%5C%22v(.%2B)%5C%22%7D%22%7D) (recommended)
+## Auto-tune
+
+1. On the PC, open `stream-test.html` (from the release page) full screen in a browser, or
+   start a game. Every test should see the same moving picture.
+2. On the TV, hold OK on that app in the app list and choose *Auto-tune*, or press Back
+   during a stream and choose *Auto-tune*.
+3. Don't touch the controller for about 11 minutes. To stop early, press Back on the auto-tune
+   screen between two tests, or quit the stream.
+
+The scores (0 to 100, higher is better):
+- **Smoothness**: frames shown against what the screen can show. Points come off for the time
+  the picture stood still, for lost frames, and for long network pauses. 0 means the deductions
+  added up to more than 100; *Details* shows which ones.
+- **Latency**: what the TV adds (decode, buffer, compositor), plus half the network round trip
+  and half a frame interval.
+- **Picture**: resolution and bits per pixel. AV1 counts as 30 % more efficient than HEVC.
+
+The total is 40 % smoothness, 35 % latency and 25 % picture. A test below 70 smoothness is
+never chosen as best while a smoother one exists. The full log goes to
+`Download/ArtemideTV` on the TV.
+
+## Tools for the PC
+
+Both files are on every [release](https://github.com/241marsburner-svg/moonlight-android/releases):
+- `stream-test.html`: a steady moving picture for the auto-tune. Press F for full screen,
+  L for a lighter version.
+- `latency-test.html`: for the latency test. Open it full screen in the stream, turn on
+  *Settings → Latency test*, and press A, B, X or Y about 20 times.
 
 ## Building
-* Install Android Studio and the Android NDK
-* Run ‘git submodule update --init --recursive’ from within moonlight-android/
-* In moonlight-android/, create a file called ‘local.properties’. Add an ‘ndk.dir=’ property to the local.properties file and set it equal to your NDK directory.
-* Build the APK using Android Studio or gradle
 
-## Authors
+GitHub Actions builds every push to `tv-c7k` and publishes it as release `tv-build-N`. That
+is the link above, and what the in-app updater looks for. Locally:
 
-* [Cameron Gutman](https://github.com/cgutman)  
-* [Diego Waxemberg](https://github.com/dwaxemberg)  
-* [Aaron Neyer](https://github.com/Aaronneyer)  
-* [Andrew Hennessy](https://github.com/yetanothername)
+    git submodule update --init --recursive
+    bash tv-patches/apply.sh        # patches for moonlight-common-c
+    ./gradlew assembleNonRoot_gameTv -ParmOnly -PskipLintVital -PciVersionCode=579999
 
-Moonlight is the work of students at [Case Western](http://case.edu) and was
-started as a project at [MHacks](http://mhacks.org).
+You need the Android SDK (platform 36) and NDK 27.0.12077973. The APKs land in
+`app/build/outputs/apk/nonRoot_game/tv/`. CI builds use version code 570000 plus the build
+number, so a local build only installs over one with a lower number. The TV build is signed
+with the key in `tv-signing/` (see the README there), so every build installs as an update
+over the previous one.
+
+Branches:
+- `tv-c7k`: this TV build (the default branch)
+- `moonlight-noir`: Artemide's main branch as it was when this fork was made (the TV build is
+  based on a newer Artemide version)
+- `ci-logs`: build logs when a CI build fails
+
+## Credits and license
+
+- Moonlight: [Cameron Gutman](https://github.com/cgutman), [Diego Waxemberg](https://github.com/dwaxemberg),
+  [Aaron Neyer](https://github.com/Aaronneyer), [Andrew Hennessy](https://github.com/yetanothername)
+  and contributors
+- Artemis: [ClassicOldSong](https://github.com/ClassicOldSong) and contributors
+- Artemide: [derflacco](https://github.com/derflacco)
+- TCL/MediaTek findings and patches: [pabragin/moonlight-tcl](https://github.com/pabragin/moonlight-tcl)
+
+Licensed under the GPL v3 (see `LICENSE.txt`). Third-party parts keep their own licenses; see
+`THIRD_PARTY_NOTICES.md`.

@@ -1012,6 +1012,44 @@ public final class TvDiagnostics {
         return sb.toString();
     }
 
+    /**
+     * What the app switched on or chose by itself for this stream, and what the TV accepted
+     * (for the "settings in use" part of the logs). One "Name: value" per line.
+     */
+    public static String describeAutomatic() {
+        final StringBuilder b = new StringBuilder(600);
+        b.append("Decoder: ").append(decoderName)
+                .append(" · try ").append(decoderConfigTry).append(" (").append(decoderPreset.isEmpty() ? "-" : decoderPreset).append(')')
+                .append(" · Android low-latency feature ").append(decoderLowLatencyFeature)
+                .append(" · MediaTek ladder ").append(mtkFullSpeedHintsApplied ? "yes" : "no").append('\n');
+        b.append("TV game picture mode: ").append(gameModeState).append('\n');
+        b.append("Audio: ").append(audioTrackMode);
+        if (!audioTrackMode.startsWith("off") && !"?".equals(audioTrackMode)) {
+            b.append(", ").append(audioBufferMs).append(" ms");
+        }
+        b.append('\n');
+        final long period = vsyncPeriodNs;
+        b.append("Pacing: buffer limit ").append(bufferLimitFrames).append(" frames · refresh grid ")
+                .append(period > 0 ? String.format(Locale.US, "%.2f Hz (%s)", 1e9 / period,
+                        vsyncPresentationGrid ? "present times" : "vsync") : "none")
+                .append(String.format(Locale.US, " · SF lead %.1f ms · learned extra margin %.1f ms",
+                        assumedPipelineNs / 1e6, adaptiveMarginNs / 1e6)).append('\n');
+        b.append("Thread priorities raised: ").append(boostedThreads < 0 ? "not yet" : String.valueOf(boostedThreads))
+                .append(" · CPU hints (ADPF): ").append(adpfState).append('\n');
+        if (!memoryInfo.isEmpty()) {
+            b.append("TV memory at start: ").append(memoryInfo).append('\n');
+        }
+        if (thermalMax >= 0) {
+            b.append("Chip temperature: ").append(thermalName(thermalNow));
+            if (thermalMax > thermalNow) {
+                b.append(" (peak ").append(thermalName(thermalMax)).append(')');
+            }
+            b.append('\n');
+        }
+        b.append("Stream statistics: ").append(collecting ? "collected" : "off").append('\n');
+        return b.toString();
+    }
+
     private static float displayRefreshHz(Context context) {
         try {
             final Display d = (context instanceof Activity)
@@ -1051,21 +1089,7 @@ public final class TvDiagnostics {
     }
 
     private static String describePacing(PreferenceConfiguration prefs) {
-        if (prefs == null) {
-            return "?";
-        }
-        switch (prefs.framePacing) {
-            case PreferenceConfiguration.FRAME_PACING_TV_SMOOTH: return "TV smooth";
-            case PreferenceConfiguration.FRAME_PACING_TV_GAME: return "TV game";
-            case PreferenceConfiguration.FRAME_PACING_BALANCED: return "Balanced";
-            case PreferenceConfiguration.FRAME_PACING_MIN_LATENCY: return "Lowest latency";
-            case PreferenceConfiguration.FRAME_PACING_MAX_SMOOTHNESS: return "Smoothest";
-            case PreferenceConfiguration.FRAME_PACING_CAP_FPS: return "Balanced + FPS limit";
-            case PreferenceConfiguration.FRAME_PACING_GPU_RAW: return "GPU raw";
-            case PreferenceConfiguration.FRAME_PACING_WARP: return "Warp";
-            case PreferenceConfiguration.FRAME_PACING_WARP2: return "Warp 2";
-            default: return "?";
-        }
+        return prefs == null ? "?" : PreferenceConfiguration.describeFramePacing(prefs.framePacing);
     }
 
     @SuppressWarnings("deprecation")

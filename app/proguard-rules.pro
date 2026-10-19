@@ -71,3 +71,6 @@
 -keep class com.limelight.utils.SurfaceViewSizer { *; }
 -keep class com.limelight.utils.FSRSizerInstaller { *; }
 -keep class com.limelight.utils.FSRSizerInstaller$AutoCloser { *; }
+
+# Artemide TV: the logs list every stream setting by reflection (TvStreamSettings)
+-keepclassmembers class com.limelight.preferences.PreferenceConfiguration { public <fields>; }
