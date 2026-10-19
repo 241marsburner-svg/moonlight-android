@@ -111,11 +111,9 @@ final class TvVsyncClock {
         // Session thread only
         private Choreographer choreographer;
         private Object vsyncCallback;   // Choreographer.VsyncCallback on Android 13+
-        private long lastVsyncNs;
-        private long period;
+        private long period;              // the display's nominal refresh period
         private int framesUntilRateCheck;
-        private long longStartNs;
-        private long longRefreshes;
+        private final Pll pll = new Pll();
         private long lastLongPublish;
 
         Session(Display display) {
@@ -206,62 +204,106 @@ final class TvVsyncClock {
                 return;
             }
 
-            // Follow the real refresh period. Callbacks can skip vsyncs, so divide by the
-            // number of refreshes in between, and only follow small differences here.
-            final long last = lastVsyncNs;
-            lastVsyncNs = vsyncNs;
-            if (last != 0L && vsyncNs > last) {
-                final long delta = vsyncNs - last;
-                final long refreshes = Math.max(1L, Math.round((double) delta / period));
-                if (refreshes <= 4L) {
-                    final long perRefresh = delta / refreshes;
-                    if (Math.abs(perRefresh - period) < period / 20) {
-                        period += (perRefresh - period) / 16;
-                    }
-                }
-                // The exact refresh rate: refreshes counted over a long time (a stream at
-                // 60.000 fps on a 60.012 Hz screen slips a frame every 80 s)
-                if (delta < 1_000_000_000L && longStartNs != 0L) {
-                    longRefreshes += refreshes;
-                } else {
-                    longStartNs = vsyncNs;
-                    longRefreshes = 0;
-                }
-                if (longRefreshes >= 600 && longRefreshes - lastLongPublish >= 60) {
-                    lastLongPublish = longRefreshes;
-                    final double avg = (vsyncNs - longStartNs) / (double) longRefreshes;
-                    TvDiagnostics.setMeasuredRefresh(1e9 / avg, (int) ((vsyncNs - longStartNs) / 1_000_000_000L));
-                }
-            } else if (longStartNs == 0L) {
-                longStartNs = vsyncNs;
-                longRefreshes = 0;
-                lastLongPublish = 0;
-            }
-
             // A display mode switch (e.g. 60 -> 120 Hz) shows up here within half a second
             if (--framesUntilRateCheck <= 0) {
                 framesUntilRateCheck = 30;
                 final long fromDisplay = periodFromDisplay(display, 0L);
                 if (fromDisplay > 0L && Math.abs(fromDisplay - period) > period / 50) {
                     period = fromDisplay;
-                    // The long measurement starts over at the new rate
-                    longStartNs = vsyncNs;
-                    longRefreshes = 0;
-                    lastLongPublish = 0;
+                    pll.reset(); // lock again at the new rate
                 }
             }
+
+            pll.onVsync(vsyncNs, period);
+            if (pll.lockedRefreshes >= 1200 && pll.lockedRefreshes - lastLongPublish >= 60) {
+                lastLongPublish = pll.lockedRefreshes;
+                TvDiagnostics.setMeasuredRefresh(pll.measuredHz(), pll.lockedSeconds());
+            } else if (pll.lockedRefreshes < lastLongPublish) {
+                lastLongPublish = 0;
+            }
+            final long gridPeriod = Math.round(pll.period);
+            final long gridRef = Math.round(pll.ref);
 
             if (presentNs > 0L) {
                 long pipeline = 0L;
-                if (deadlineNs > 0L && presentNs > deadlineNs && presentNs - deadlineNs < 4 * period) {
+                if (deadlineNs > 0L && presentNs > deadlineNs && presentNs - deadlineNs < 4 * gridPeriod) {
                     pipeline = presentNs - deadlineNs;
                 }
-                publish(this, presentNs, period, pipeline, true);
+                publish(this, presentNs, gridPeriod, pipeline, true);
             } else {
-                publish(this, vsyncNs, period, 0L, false);
+                publish(this, gridRef, gridPeriod, 0L, false);
             }
 
             postNext();
+        }
+    }
+
+    /**
+     * Phase-locked refresh grid. This TV's vsync timestamps jitter (and Choreographer moves them
+     * after skipped frames), so the grid follows them slowly instead of jumping to each one: a
+     * frame planned for a refresh keeps that refresh from one frame to the next. Also measures
+     * the exact refresh rate over the time the grid stayed locked.
+     */
+    static final class Pll {
+        double ref;                 // a refresh instant of the grid, 0 = not locked
+        double period;
+        private int outliers;
+        private double lockRef;     // ref when the grid locked
+        long lockedRefreshes;       // refreshes since then
+
+        void reset() {
+            ref = 0;
+            outliers = 0;
+            lockedRefreshes = 0;
+        }
+
+        /** @param nominalNs the display's refresh period, for locking and as a sanity bound */
+        void onVsync(long vsyncNs, long nominalNs) {
+            if (ref == 0) {
+                ref = vsyncNs;
+                period = nominalNs;
+                lockRef = ref;
+                lockedRefreshes = 0;
+                outliers = 0;
+                return;
+            }
+            final double k = Math.rint((vsyncNs - ref) / period);
+            if (k >= 1 && k <= 120) {
+                final double predicted = ref + k * period;
+                final double err = vsyncNs - predicted;
+                if (Math.abs(err) <= period / 4) {
+                    // Phase follows an eighth of the error, the period much less (critically
+                    // damped: it settles within a few seconds and then barely moves)
+                    ref = predicted + err / 8;
+                    period += err / (k * 256);
+                    if (period < nominalNs * 0.97 || period > nominalNs * 1.03) {
+                        period = nominalNs;
+                    }
+                    lockedRefreshes += (long) k;
+                    outliers = 0;
+                } else if (++outliers >= 8) {
+                    // Not a single odd timestamp: the grid really moved. Start over.
+                    ref = vsyncNs;
+                    lockRef = ref;
+                    lockedRefreshes = 0;
+                    outliers = 0;
+                }
+                // (a single odd timestamp is ignored: the grid stays)
+            } else if (k > 120) {
+                // No callbacks for two seconds: lock the phase again, keep the period
+                ref = vsyncNs;
+                lockRef = ref;
+                lockedRefreshes = 0;
+                outliers = 0;
+            }
+        }
+
+        double measuredHz() {
+            return lockedRefreshes > 0 ? 1e9 * lockedRefreshes / (ref - lockRef) : 0;
+        }
+
+        int lockedSeconds() {
+            return (int) ((ref - lockRef) / 1e9);
         }
     }
 

@@ -26,10 +26,10 @@ import android.view.Display;
  *  - if every frame for TRIM_WINDOW_NS had at least two spare frames queued ahead of it, one
  *    frame of that buffer is removed. One spare frame is kept: that is what hides Wi-Fi jitter.
  *
- * More frames than refreshes (e.g. 120 fps on a 60 Hz TV): the frames are grouped into refreshes
- * by when the PC captured them, so each refresh moves the picture on by the same amount (see
- * scheduleGrouped); TV smooth keeps a little more spare time than TV game. ("Lowest latency"
- * pacing hands every frame over at once instead.)
+ * More frames than refreshes (e.g. 120 fps on a 60 Hz TV): TV game hands every frame over at once
+ * and the newest one at each refresh is shown. TV smooth groups the frames into refreshes by when
+ * the PC captured them, so each refresh moves the picture on by the same amount (see
+ * scheduleGrouped), and falls back to "at once" when that makes the decoder hold frames back.
  *
  * All times use the System.nanoTime() timebase, which is what MediaCodec expects.
  */
@@ -99,6 +99,12 @@ final class TvFramePacer {
     private boolean groupLateInWindow;
     private long groupLastLateNs;
     private long groupLastBigLateNs;
+    // Grouping is switched off for the rest of the stream when the decoder starts holding
+    // frames back (more than this many on average, after the first few seconds)
+    private static final double GROUP_MAX_DECODER_BACKLOG = 1.5;
+    private static final long GROUP_BACKLOG_CHECK_AFTER = 600;
+    private boolean groupingOff;
+    private long groupedFrames;
 
     private long framePeriodNs = 16_666_667L;
 
@@ -223,17 +229,31 @@ final class TvFramePacer {
         // that says nothing about the network, so don't grow the buffer for it
         final boolean streamFasterThanDisplay = frame < (refresh * 9) / 10;
 
-        if (streamFasterThanDisplay && haveGrid && hostUs >= 0) {
-            final long basePipeline = (presentationGrid && grid[2] > 0L)
-                    ? grid[2] : (aggressiveTiming ? refresh / 2 : refresh);
-            return scheduleGrouped(nowNs, hostUs, gridRef, refresh, frame,
-                    basePipeline + adaptiveExtraNs, presentationGrid, game);
+        // TV smooth with more frames than refreshes: group them by capture time, unless that
+        // made the decoder hold frames back (it runs out of output buffers while SurfaceFlinger
+        // holds the grouped frames until their refresh: seen on the C7K at 120 fps)
+        if (streamFasterThanDisplay && !game && haveGrid && hostUs >= 0 && !groupingOff) {
+            final double backlog = TvDiagnostics.decoderBacklogFrames();
+            if (groupedFrames > GROUP_BACKLOG_CHECK_AFTER && backlog > GROUP_MAX_DECODER_BACKLOG) {
+                groupingOff = true;
+                TvDiagnostics.setGroupingNote(String.format(java.util.Locale.US,
+                        "grouping by capture time switched off: the decoder started holding frames back (%.1f on average)", backlog));
+                com.limelight.LimeLog.warning("Artemide TV pacing: grouping off, decoder backlog " + backlog);
+            } else {
+                groupedFrames++;
+                final long basePipeline = (presentationGrid && grid[2] > 0L)
+                        ? grid[2] : (aggressiveTiming ? refresh / 2 : refresh);
+                return scheduleGrouped(nowNs, hostUs, gridRef, refresh, frame,
+                        basePipeline + adaptiveExtraNs, presentationGrid, game);
+            }
         }
 
         if (streamFasterThanDisplay) {
-            // More frames than refreshes, but no refresh grid or no capture times from the PC:
+            // More frames than refreshes (TV game; TV smooth without capture times or grid):
             // no buffer, every frame goes to the next refresh it can make and the newest
-            // one wins there. A timestamp of "now" lets
+            // one wins there. The frame leaves the decoder's buffers at once, which is what keeps
+            // the C7K's decoder fast at 120 fps (holding frames for a planned refresh starved it
+            // of output buffers: 30 ms per frame instead of 6). A timestamp of "now" lets
             // SurfaceFlinger take the frame at its very next wake-up; a planned refresh would rest
             // on a guess of SurfaceFlinger's deadline, which costs up to a refresh when it errs on
             // the safe side. Nothing is planned, so replaced frames are not counted as drops.
@@ -459,8 +479,13 @@ final class TvFramePacer {
                 slot = earliest;
             }
         }
+        // Never more than one refresh beyond the earliest: every frame SurfaceFlinger holds is
+        // an output buffer the decoder can't use
+        if (slot > earliest + refresh) {
+            slot = earliest + refresh;
+        }
         // Never before the frame queued before it (SurfaceFlinger keeps the order anyway)
-        if (slot < groupLastSlotNs) {
+        if (slot < groupLastSlotNs - refresh / 2) {
             slot = groupLastSlotNs;
         }
 

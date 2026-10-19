@@ -24,9 +24,12 @@ import java.util.Locale;
  * running on the PC, measures each one and scores it, in three stages:
  *
  *  1 Formats          resolution, frame rate, bitrate and codec (HEVC, AV1), all with TV game pacing
- *  2 Latency options  on the best format: the same settings again (how repeatable the results
- *                     are), TV game with aggressive timing, TV smooth, the stock "lowest latency"
- *                     pacing, MediaTek's extra decoder keys, and synchronous decoding
+ *    Re-check         the best format again, and the runner-up when it was close: the format is
+ *                     chosen on the averages of the two runs (same picture: the faster one,
+ *                     unless it is clearly less smooth)
+ *  2 Latency options  on the chosen format: TV smooth, the stock "lowest latency" pacing,
+ *                     MediaTek's extra decoder keys, and synchronous decoding, each against the
+ *                     chosen format's two runs
  *  3 Final check      the options that helped, together (only when more than one helped)
  *
  * Every test waits until its picture has been smooth for 3 seconds in a row (streams often
@@ -105,6 +108,10 @@ public final class TvAutoTune {
     public static final int STAGE_FORMAT = 1;
     public static final int STAGE_OPTIONS = 2;
     public static final int STAGE_FINAL = 3;
+    // Runs between formats and options: the best format again, and the runner-up when it was close
+    public static final int STAGE_RECHECK = 4;
+    // A runner-up this close (total points) to the best format is measured again before choosing
+    private static final double CLOSE_POINTS = 6.0;
 
     public static String codecName(int codec) {
         switch (codec) {
@@ -242,6 +249,7 @@ public final class TvAutoTune {
     private static boolean stepActive;        // a Game for plan[index] is up (or starting)
     private static boolean stepDone;          // ... and its result is in
     private static boolean measuring;
+    private static boolean recheckPlanned;    // the re-check runs are in the plan
     private static boolean optionsPlanned;    // stage 2 is in the plan (or could not be made)
     private static boolean finalPlanned;      // stage 3 likewise
     private static TvDiagnostics.Sample windowStart;
@@ -312,33 +320,162 @@ public final class TvAutoTune {
         plan.add(c);
     }
 
-    /** Stage 2: the latency options, on the best format of stage 1. */
+    /**
+     * Re-check: the best format again (its two runs are the baseline for the options), and the
+     * runner-up again when it was within CLOSE_POINTS: one run can be unlucky (the PC busy for a
+     * moment, Wi-Fi), and the format is the biggest choice. Both run with the standard options.
+     */
+    private static void planRecheck() {
+        recheckPlanned = true;
+        final Result w = bestOfStage(STAGE_FORMAT);
+        if (w == null) {
+            return;
+        }
+        final int game = PreferenceConfiguration.FRAME_PACING_TV_GAME;
+        plan.add(w.config.with(w.config.standardOptions() ? "the best format again (shows how repeatable the results are)"
+                : "the best format again, with the standard options (the baseline for the options)", STAGE_RECHECK, game, false, false, false));
+        Result runnerUp = null;
+        for (Result r : results) {
+            if (r.ok && r.config.stage == STAGE_FORMAT && r != w && !r.config.sameFormat(w.config) &&
+                    smoothOk(r) == smoothOk(w) && r.pcLimited == w.pcLimited &&
+                    (runnerUp == null || betterRank(r, runnerUp))) {
+                runnerUp = r;
+            }
+        }
+        if (runnerUp != null && runnerUp.total >= w.total - CLOSE_POINTS) {
+            plan.add(runnerUp.config.with("the runner-up again: it was close to the best", STAGE_RECHECK, game, false, false, false));
+        }
+    }
+
+    // How the format was chosen (for the results)
+    private static String formatWhy = "";
+
+    /** The stage 1 run of a format with the standard options, or null. */
+    private static Result formatRun(Config c) {
+        for (Result r : results) {
+            if (r.ok && r.config.stage == STAGE_FORMAT && r.config.sameFormat(c) && r.config.standardOptions()) {
+                return r;
+            }
+        }
+        return null;
+    }
+
+    /** The re-check run of a format, or null. */
+    private static Result recheckRun(Config c) {
+        for (Result r : results) {
+            if (r.ok && r.config.stage == STAGE_RECHECK && r.config.sameFormat(c)) {
+                return r;
+            }
+        }
+        return null;
+    }
+
+    /** A format's result: the average of its two runs when it was re-checked. */
+    private static Result formatResult(Result stage1) {
+        final Result again = recheckRun(stage1.config);
+        if (again == null) {
+            return stage1;
+        }
+        final Result first = formatRun(stage1.config);
+        return first != null ? average(first, again) : again;
+    }
+
+    /**
+     * Is format a better than b? A smooth one beats a stuttering one; between two of the same
+     * picture class (e.g. 1440p HEVC against 1440p AV1) the faster one wins unless it is clearly
+     * less smooth; otherwise the higher total.
+     */
+    private static boolean preferFormat(Result a, Result b, double latNoise, double smoothNoise) {
+        final boolean sa = smoothOk(a), sb = smoothOk(b);
+        if (sa != sb) {
+            return sa;
+        }
+        if (a.pcLimited != b.pcLimited) {
+            return !a.pcLimited;
+        }
+        if (Math.abs(a.picture - b.picture) < 3) {
+            final double faster = Math.max(MIN_FASTER_MS, latNoise);
+            final double loss = Math.max(MAX_SMOOTH_LOSS, smoothNoise);
+            if (a.latencyMs <= b.latencyMs - faster && a.smooth >= b.smooth - loss) {
+                return true;
+            }
+            if (b.latencyMs <= a.latencyMs - faster && b.smooth >= a.smooth - loss) {
+                return false;
+            }
+        }
+        return a.total > b.total;
+    }
+
+    /** The format to use: stage 1's best, or the runner-up when the re-check says so. */
+    private static Result chooseFormat() {
+        final Result w = bestOfStage(STAGE_FORMAT);
+        formatWhy = "";
+        if (w == null) {
+            return null;
+        }
+        // Noise: how much the same format differed between its two runs
+        double latNoise = 0, smoothNoise = 0;
+        final List<Result> candidates = new ArrayList<>();
+        candidates.add(w);
+        for (Result r : results) {
+            if (r.ok && r.config.stage == STAGE_RECHECK) {
+                final Result first = formatRun(r.config);
+                if (first != null) {
+                    latNoise = Math.max(latNoise, Math.abs(first.latencyMs - r.latencyMs));
+                    smoothNoise = Math.max(smoothNoise, Math.abs(first.smooth - r.smooth));
+                }
+                if (!r.config.sameFormat(w.config) && first != null) {
+                    candidates.add(first);
+                }
+            }
+        }
+        Result best = formatResult(w);
+        for (int i = 1; i < candidates.size(); i++) {
+            final Result other = formatResult(candidates.get(i));
+            final boolean switched = preferFormat(other, best, latNoise, smoothNoise);
+            formatWhy = String.format(Locale.US,
+                    "Re-check: %s %s (average of 2 runs: smoothness %.0f, delay %.1f ms, total %.0f) against %s (smoothness %.0f, delay %.1f ms, total %.0f); " +
+                            "runs of the same format differed by up to %.1f ms and %.0f smoothness.",
+                    switched ? other.config.describeFormat() : best.config.describeFormat(),
+                    switched ? "beats" : "stays ahead of",
+                    switched ? other.smooth : best.smooth, switched ? other.latencyMs : best.latencyMs, switched ? other.total : best.total,
+                    switched ? best.config.describeFormat() : other.config.describeFormat(),
+                    switched ? best.smooth : other.smooth, switched ? best.latencyMs : other.latencyMs, switched ? best.total : other.total,
+                    latNoise, smoothNoise);
+            if (switched) {
+                best = other;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * Stage 2: the latency options, on the chosen format. (Aggressive timing is not tested: by the
+     * deadline this TV reports for SurfaceFlinger it can only make frames miss their refresh, and
+     * whether the real deadline is shorter can't be measured without a camera.)
+     */
     private static void planOptions() {
         optionsPlanned = true;
-        formatWinner = bestOfStage(STAGE_FORMAT);
+        formatWinner = chooseFormat();
         if (formatWinner == null) {
             return;
         }
         final Config f = formatWinner.config;
         final int game = PreferenceConfiguration.FRAME_PACING_TV_GAME;
-        plan.add(f.with(f.standardOptions() ? "the same again (shows how repeatable the results are)"
-                : "TV game with standard options: the baseline for the options", STAGE_OPTIONS, game, false, false, false));
-        // Aggressive timing changes nothing when the stream has more frames than the screen refreshes
+        if (recheckRun(f) == null) {
+            // (Only when the re-check could not run this format: the baseline for the options)
+            plan.add(f.with("TV game with standard options: the baseline for the options", STAGE_OPTIONS, game, false, false, false));
+        }
         final double hz = formatWinner.screenHz > 20 ? formatWinner.screenHz : screenHzSeen;
         final boolean framePerRefresh = f.fps <= hz * 1.1;
+        plan.add(f.with(framePerRefresh ? "TV smooth: a bigger buffer against Wi-Fi bunching"
+                        : "TV smooth: frames grouped by capture time, so every refresh moves the picture on evenly",
+                STAGE_OPTIONS, PreferenceConfiguration.FRAME_PACING_TV_SMOOTH, false, false, false));
+        // (With more frames than refreshes TV game already shows every frame at once)
         if (framePerRefresh) {
-            plan.add(f.with("aggressive timing: frames planned half a refresh closer", STAGE_OPTIONS, game, true, false, false));
+            plan.add(f.with("lowest latency: every frame shown at once, no pacing", STAGE_OPTIONS,
+                    PreferenceConfiguration.FRAME_PACING_MIN_LATENCY, false, false, false));
         }
-        // With more frames than refreshes (120 fps on 60 Hz) TV game and TV smooth both group the
-        // frames by capture time (TV smooth only keeps 2 ms more spare), so only "every frame at
-        // once" is a real alternative there
-        if (framePerRefresh) {
-            plan.add(f.with("TV smooth: a bigger buffer against Wi-Fi bunching", STAGE_OPTIONS,
-                    PreferenceConfiguration.FRAME_PACING_TV_SMOOTH, false, false, false));
-        }
-        plan.add(f.with(framePerRefresh ? "lowest latency: every frame shown at once, no pacing"
-                        : "lowest latency: every frame shown at once (no grouping by capture time: a little less delay, less even motion)",
-                STAGE_OPTIONS, PreferenceConfiguration.FRAME_PACING_MIN_LATENCY, false, false, false));
         if (formatWinner.decoder != null && formatWinner.decoder.toLowerCase(Locale.US).contains("mtk")) {
             plan.add(f.with("MediaTek extra decoder keys (vendor speed keys, operating rate, ultra low latency)",
                     STAGE_OPTIONS, game, false, true, false));
@@ -378,7 +515,13 @@ public final class TvAutoTune {
         if (index + 1 < plan.size() || !running) {
             return;
         }
-        if (!optionsPlanned && results.size() >= plan.size()) {
+        if (!recheckPlanned && results.size() >= plan.size()) {
+            planRecheck();
+        }
+        if (index + 1 < plan.size()) {
+            return;
+        }
+        if (recheckPlanned && !optionsPlanned && results.size() >= plan.size()) {
             planOptions();
         }
         if (index + 1 < plan.size()) {
@@ -408,8 +551,10 @@ public final class TvAutoTune {
         stepActive = false;
         stepDone = false;
         measuring = false;
+        recheckPlanned = false;
         optionsPlanned = false;
         finalPlanned = false;
+        formatWhy = "";
         optionsBase = null;
         formatWinner = null;
         recommended = null;
@@ -467,8 +612,11 @@ public final class TvAutoTune {
     /** The number of tests, as far as it is known (stage 2 and 3 are planned on the way). */
     public static synchronized int planSize() {
         int n = plan.size();
+        if (!recheckPlanned) {
+            n += 2;
+        }
         if (!optionsPlanned) {
-            n += 6;
+            n += 4;
         }
         if (!finalPlanned) {
             n += 1;
@@ -477,7 +625,7 @@ public final class TvAutoTune {
     }
 
     public static synchronized boolean planComplete() {
-        return optionsPlanned && finalPlanned;
+        return recheckPlanned && optionsPlanned && finalPlanned;
     }
 
     public static synchronized int completedCount() {
@@ -493,6 +641,7 @@ public final class TvAutoTune {
         if (index + 1 >= plan.size()) {
             if (!finalPlanned) {
                 // Nothing more could be planned (e.g. every format failed)
+                recheckPlanned = true;
                 optionsPlanned = true;
                 finalPlanned = true;
                 decide();
@@ -536,7 +685,7 @@ public final class TvAutoTune {
             return false;
         }
         planMoreIfNeeded();
-        return results.size() >= plan.size() && optionsPlanned && finalPlanned;
+        return results.size() >= plan.size() && recheckPlanned && optionsPlanned && finalPlanned;
     }
 
     public static synchronized String currentLabel() {
@@ -556,7 +705,8 @@ public final class TvAutoTune {
     public static synchronized String nextStageName() {
         if (index + 1 < plan.size()) {
             final int st = plan.get(index + 1).stage;
-            return st == STAGE_FORMAT ? "formats" : st == STAGE_OPTIONS ? "latency options" : "final check";
+            return st == STAGE_FORMAT ? "formats" : st == STAGE_RECHECK ? "re-check of the best formats"
+                    : st == STAGE_OPTIONS ? "latency options" : "final check";
         }
         return "";
     }
@@ -849,7 +999,10 @@ public final class TvAutoTune {
             final double ratio = r.expectedFps > 0 ? Math.min(1.0, r.modelFps / r.expectedFps) : 0;
             final double frames = 100 * ratio;
             final double frozenP = FROZEN_POINTS_PER_MS * r.frozenMsPerMin;
-            final double jumpP = JUMP_POINTS_PER_MS * (r.skippedMsPerMin + r.unevenMsPerMin);
+            // Half-refresh uneven steps (more frames than refreshes) cost at most what a frame
+            // rate that doesn't fit the screen costs: the motion judders a little, nothing stops
+            final double jumpP = JUMP_POINTS_PER_MS * r.skippedMsPerMin
+                    + Math.min(UNEVEN_MOTION_POINTS, JUMP_POINTS_PER_MS * r.unevenMsPerMin);
             r.smooth = clamp(frames - frozenP - jumpP - lossP - pauseP - unevenP);
             r.smoothWhy = String.format(Locale.US,
                     "%.0f = new pictures %.0f (%.1f of %.0f per s; PC sent %.1f fps) - frozen %.0f (%.1f refreshes/min, %.0f ms/min, longest still %d ms; " +
@@ -1025,14 +1178,19 @@ public final class TvAutoTune {
 
     /** Works out the recommendation from what has been measured so far. */
     private static void decide() {
-        if (!optionsPlanned || formatWinner == null) {
-            formatWinner = bestOfStage(STAGE_FORMAT);
+        final Result chosen = chooseFormat();
+        if (chosen != null || formatWinner == null) {
+            formatWinner = chosen;
         }
-        optionsBase = null;
-        for (Result r : results) {
-            if (r.ok && r.config.stage == STAGE_OPTIONS && r.config.standardOptions()) {
-                optionsBase = r;
-                break;
+        // The baseline's second run: the re-check of the chosen format (or, when that could not
+        // run, the standard-options run planned with the options)
+        optionsBase = formatWinner != null ? recheckRun(formatWinner.config) : null;
+        if (optionsBase == null) {
+            for (Result r : results) {
+                if (r.ok && r.config.stage == STAGE_OPTIONS && r.config.standardOptions()) {
+                    optionsBase = r;
+                    break;
+                }
             }
         }
         // Noise: the same settings measured in stage 1 and again in stage 2. The baseline is
@@ -1044,13 +1202,7 @@ public final class TvAutoTune {
         baseline = optionsBase;
         Result firstRun = null;
         if (optionsBase != null) {
-            for (Result r : results) {
-                if (r.ok && r.config.stage == STAGE_FORMAT && r.config.sameFormat(optionsBase.config) &&
-                        r.config.sameOptions(optionsBase.config)) {
-                    firstRun = r;
-                    break;
-                }
-            }
+            firstRun = formatRun(optionsBase.config);
             if (firstRun != null) {
                 noise = Math.abs(firstRun.total - optionsBase.total);
                 latencyNoise = Math.abs(firstRun.latencyMs - optionsBase.latencyMs);
@@ -1065,10 +1217,13 @@ public final class TvAutoTune {
             recommendation = "No test finished, so there is nothing to recommend.";
             return;
         }
+        if (!formatWhy.isEmpty()) {
+            why.append(formatWhy).append('\n');
+        }
         if (optionsBase == null) {
-            recommendation = running && !finalPlanned
+            recommendation = why + (running && !finalPlanned
                     ? "Best format so far: " + formatWinner.config.describe() + ". The latency options are tested on the best format next."
-                    : "Best format: " + formatWinner.config.describe() + ". (The latency options were not tested.)";
+                    : "Best format: " + formatWinner.config.describe() + ". (The latency options were not tested.)");
             return;
         }
 
@@ -1305,6 +1460,29 @@ public final class TvAutoTune {
             }
         }
 
+        // Re-check
+        boolean recheckHeader = false;
+        for (Result r : results) {
+            if (r.config.stage != STAGE_RECHECK) {
+                continue;
+            }
+            if (!recheckHeader) {
+                recheckHeader = true;
+                b.append("\nRE-CHECK (measured again; the format is chosen on the averages)\n");
+                b.append(String.format(Locale.US, "%-34s %-18s %-18s %s\n", "Format", "1st run", "2nd run", "Average"));
+            }
+            final Result first = formatRun(r.config);
+            if (!r.ok) {
+                b.append(String.format(Locale.US, "%-34s failed: %s\n", r.config.describeFormat(), r.failure));
+                continue;
+            }
+            final Result avg = formatResult(first != null ? first : r);
+            b.append(String.format(Locale.US, "%-34s %-18s %-18s %s\n", r.config.describeFormat(),
+                    first != null ? String.format(Locale.US, "%.0f / %.1f ms", first.smooth, first.latencyMs) : "-",
+                    String.format(Locale.US, "%.0f / %.1f ms", r.smooth, r.latencyMs),
+                    String.format(Locale.US, "smoothness %.0f, delay %.1f ms, total %.0f%s", avg.smooth, avg.latencyMs, avg.total, pcNote(r))));
+        }
+
         // Stage 2
         Result base = null;
         final List<Result> options = new ArrayList<>();
@@ -1429,27 +1607,29 @@ public final class TvAutoTune {
                 .append(Build.MODEL).append(" · Android ").append(Build.VERSION.RELEASE).append(" · app ")
                 .append(BuildConfig.VERSION_NAME).append(" (").append(BuildConfig.VERSION_CODE).append(")\n");
         b.append(String.format(Locale.US, "Each test: waits until the picture is smooth for 3 s (%d to %d s; the first test %d to %d s), " +
-                        "then %d s measured. Stage 1 formats, stage 2 latency options on the best format, " +
-                        "stage 3 the helpful options together.\n\n",
+                        "then %d s measured. Stage 1 formats, then the best (and a close runner-up) again, stage 2 latency options " +
+                        "on the chosen format, stage 3 the helpful options together.\n\n",
                 MIN_WARMUP_MS / 1000, MAX_WARMUP_MS / 1000, FIRST_MIN_WARMUP_MS / 1000, FIRST_MAX_WARMUP_MS / 1000,
                 MEASURE_MS / 1000));
         b.append("RESULTS\n").append(summaryText()).append('\n');
         b.append("SCORES (0-100, higher is better)\n");
         b.append(String.format(Locale.US,
                 " Smoothness = 100 x new pictures/possible - %.3f per ms/min the picture stood still longer than the content's rhythm" +
-                        " - %.3f per ms/min of skipped frames and uneven steps - %.0f per frame loss/min - %.0f per network pause (40 ms+) per minute" +
+                        " - %.3f per ms/min of skipped frames and uneven steps (uneven steps at most %.0f) - %.0f per frame loss/min - %.0f per network pause (40 ms+) per minute" +
                         " - %.0f when the frame rate doesn't fit the screen's refresh rate (uneven motion)." +
                         " Which refresh shows which frame comes from SurfaceFlinger's timing (the display's presentation deadline and its refresh grid):" +
                         " this TV's frame-rendered callback only echoes the requested time. Without a refresh grid: %.2f per ms/min of hitches the callback saw.\n",
-                FROZEN_POINTS_PER_MS, JUMP_POINTS_PER_MS, LOSS_POINTS, PAUSE_POINTS, UNEVEN_MOTION_POINTS, HITCH_POINTS_PER_STALL_MS));
+                FROZEN_POINTS_PER_MS, JUMP_POINTS_PER_MS, UNEVEN_MOTION_POINTS, LOSS_POINTS, PAUSE_POINTS, UNEVEN_MOTION_POINTS, HITCH_POINTS_PER_STALL_MS));
         b.append(String.format(Locale.US, " Latency    = 100 - %.1f x (ms - %.0f), ms = PC (capture to encoded) + round trip/2 + TV (arrival to the refresh it is shown on) + half a frame interval\n",
                 LATENCY_POINTS_PER_MS, LATENCY_FREE_MS));
         b.append(" Picture    = resolution (4K 100, 1440p 85, 1080p 70) x (0.6 + 0.4 x bits-per-pixel/0.15, capped; AV1 x1.3)\n");
         b.append(" Total      = 40% smoothness + 35% latency + 25% picture; tests below 70 smoothness rank last\n");
-        b.append(String.format(Locale.US, " Stage 2: the baseline is the best format measured twice (averaged). An option counts when it is %.0f+ ms faster" +
+        b.append(String.format(Locale.US, " Format: the best of stage 1 and a runner-up within %.0f points run again; between two of the same picture the faster one wins" +
+                        " unless it is clearly less smooth, otherwise the higher total (both on the averages).\n" +
+                        " Stage 2: the baseline is the chosen format measured twice (averaged). An option counts when it is %.0f+ ms faster" +
                         " (or more than the two runs differed) and loses at most %.0f smoothness (or the noise), or when it is %.0f+ smoother and at most %.0f ms slower." +
                         " The final check counts when it is not slower than the best single option by %.0f+ ms and keeps its smoothness.\n\n",
-                MIN_FASTER_MS, MAX_SMOOTH_LOSS, MIN_SMOOTHER, MAX_SLOWER_MS, MAX_SLOWER_MS));
+                CLOSE_POINTS, MIN_FASTER_MS, MAX_SMOOTH_LOSS, MIN_SMOOTHER, MAX_SLOWER_MS, MAX_SLOWER_MS));
         b.append("WHY EACH TEST GOT ITS SCORES\n").append(detailsText());
         b.append("DETAILS\n");
         b.append("test;stage;settings;ok;smooth after s;total;smooth;latency;latency ms;picture;new pictures/s;possible fps;PC sent fps;screen Hz;" +

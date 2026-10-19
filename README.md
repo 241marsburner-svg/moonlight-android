@@ -67,15 +67,18 @@ To make 120 fps usable:
   120 Hz. If the PC only delivers 60 fps, a 120 fps stream gains nothing. The stream test page
   shows the rate it really draws in its corner, and the auto-tune marks 120 fps tests where the
   PC sent fewer frames (and ranks them last).
-- TV game and TV smooth group the frames into refreshes by when the PC captured them (every frame
-  carries that time). Every refresh then moves the picture on by the same amount. Without this,
-  a frame arriving a millisecond early or late decides which refresh it lands on, and the picture
-  steps unevenly, at times for seconds on end. The cost is about 3 ms of delay. *Lowest latency*
-  pacing still shows every frame at once, if you want to compare.
+- TV game shows every frame at once at 120 fps, and the TV takes the newest at each refresh.
+  That keeps the decoder fast: holding frames back for a planned refresh made the C7K's decoder
+  run out of buffers (30 ms per frame instead of 6). TV smooth groups the frames into refreshes
+  by when the PC captured them, so every refresh moves the picture on by the same amount, and
+  switches back to "at once" by itself if the decoder starts holding frames back.
+- The PC must capture all 120 frames: the stream report says how many it really captured
+  ("leaves out about 1.4 a second" means a small stutter each time).
 - The stream report tells PC-side trouble from the network's: *gaps where the PC captured
   nothing* point at the PC (game, capture, GPU), and *late deliveries* at the encoder, the PC's
   network or Wi-Fi. A regular stall of about 150 ms roughly every second, with sound still
-  arriving, is on the PC side: look at Apollo's log while it happens.
+  arriving, is on the PC side: look at Apollo's log while it happens. On one C7K with an Intel
+  Arc PC this happened at 1080p only (60 and 120 fps), never at 1440p or 4K.
 
 ## What this build adds
 
@@ -125,11 +128,16 @@ It runs in rounds:
 1. **Formats**: resolutions, frame rates, bitrates and codecs (HEVC against AV1, if the TV has
    an AV1 decoder), all with TV game pacing, plus your current settings. 120 fps (1440p and
    1080p) is tested when the screen can show it evenly; 90 fps only on a screen that fits it.
-2. **Latency options**, on the best format: the same settings again (that shows how much the
-   results vary from run to run), TV game with aggressive timing, TV smooth, the stock *lowest
-   latency* pacing, MediaTek's extra decoder keys, and sync decoding. (At 120 fps on 60 Hz,
-   aggressive timing and TV smooth are left out: there they change nothing or almost nothing.)
-3. **Final check**: the options that helped, together (only when more than one helped).
+2. **Re-check**: the best format runs again (that shows how much results vary from run to run),
+   and so does the runner-up when it was close. The format is chosen on the averages: between
+   two with the same picture (1440p HEVC against 1440p AV1, say) the faster one wins unless it is
+   clearly less smooth.
+3. **Latency options**, on the chosen format: TV smooth, the stock *lowest latency* pacing,
+   MediaTek's extra decoder keys, and sync decoding. Aggressive timing is not tested: by the
+   deadline the TV reports it can only make frames miss their refresh, and whether the real
+   deadline is shorter can't be measured without a camera. (At 120 fps on 60 Hz lowest latency
+   is left out: TV game already shows every frame at once there.)
+4. **Final check**: the options that helped, together (only when more than one helped).
 
 Each test first waits until its picture has been smooth for 3 seconds in a row: streams often
 stutter for a few seconds after they start. It waits at most 25 seconds. A setting that never

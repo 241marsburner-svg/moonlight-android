@@ -137,8 +137,25 @@ public final class TvDiagnostics {
         }
     }
 
+    // Frames inside the decoder, smoothed (x1000), for the pacer's backlog guard
+    private static volatile long inFlightEmaMilli;
+    private static volatile String groupingNote = "";
+
+    /** Frames waiting inside the decoder lately (smoothed over about a second at 60 fps). */
+    static double decoderBacklogFrames() {
+        return inFlightEmaMilli / 1000.0;
+    }
+
+    static void setGroupingNote(String note) {
+        groupingNote = note != null ? note : "";
+    }
+
     /** A decoded frame came out; this many frames were still inside the decoder. */
     static void onDecoderInFlight(long frames) {
+        if (frames >= 0 && frames <= 64) {
+            final long ema = inFlightEmaMilli;
+            inFlightEmaMilli = ema + (frames * 1000 - ema) / 64;
+        }
         if (!collecting || frames < 0 || frames > 64) {
             return;
         }
@@ -656,6 +673,8 @@ public final class TvDiagnostics {
         inFlightSamples.set(0);
         windowMaxInFlight = 0;
         sessionMaxInFlight = 0;
+        inFlightEmaMilli = 0;
+        groupingNote = "";
         lastHostUs = -1;
         hostChecks = 0;
         hostMismatches = 0;
@@ -1464,8 +1483,12 @@ public final class TvDiagnostics {
         }
         final long n = hostCadenceN.get();
         final double pcFps = n > 0 ? 1e6 * n / hostCadenceSumUs.get() : 0;
+        final double asked = expectedFps();
+        final String missing = pcFps > 1 && asked - pcFps >= 0.5 && asked - pcFps < asked * 0.5
+                ? String.format(Locale.US, " (of %.0f asked: it leaves out about %.1f a second, each one a small stutter)", asked, asked - pcFps)
+                : "";
         return String.format(Locale.US,
-                "PC: captures %.2f fps (its clock) · %d gaps where it captured nothing 40 ms+ (%.1f/min, longest %d ms) · " +
+                "PC: captures %.2f fps (its clock)" + missing.replace("%", "%%") + " · %d gaps where it captured nothing 40 ms+ (%.1f/min, longest %d ms) · " +
                         "%d late deliveries 40 ms+ (captured in time, arrived late: encoder, PC network or Wi-Fi; longest %d ms) · " +
                         "frames later than the PC's rhythm: %.1f%% by 4 ms+, %.1f%% by 8 ms+, %.1f%% by 16 ms+",
                 pcFps, pcGaps.get(), pcGaps.get() * 60.0 / Math.max(1.0, secs), maxPcGapMs,
@@ -1489,17 +1512,19 @@ public final class TvDiagnostics {
                 "Refresh: screen %.3f Hz (measured over %d s) · PC %.3f fps", hz, measuredRefreshSecs, pcFps));
         final double ratio = pcFps / hz;
         final long k = Math.round(ratio);
-        if (k >= 1 && Math.abs(ratio - k) < 0.02) {
+        if (k >= 1 && Math.abs(ratio - k) < 0.1 * k) {
             final double beat = pcFps - k * hz; // frames per second the PC is ahead (+) or behind (-)
             if (Math.abs(beat) < 0.001) {
                 b.append(" → in step (no slips to expect)");
             } else {
                 final double every = 1.0 / Math.abs(beat);
-                b.append(String.format(Locale.US, " → about every %.0f s %s (the two rates differ by %.3f; the PC's clock may be off by a few ppm)",
-                        every,
-                        k == 1 ? (beat < 0 ? "the screen shows a frame twice" : "a frame is left out")
-                                : "the frame groups shift by one (one uneven step)",
-                        Math.abs(beat)));
+                final String what = k == 1 ? (beat < 0 ? "the screen shows a frame twice" : "a frame is left out")
+                        : "the frame groups shift by one (one uneven step)";
+                b.append(every >= 1.5
+                        ? String.format(Locale.US, " → about every %.0f s %s (the two rates differ by %.3f; the PC's clock may be off by a few ppm)",
+                                every, what, Math.abs(beat))
+                        : String.format(Locale.US, " → %s about %.1f times a second (the two rates differ by %.2f)",
+                                what, Math.abs(beat), Math.abs(beat)));
             }
         } else if (ratio > 1.05) {
             b.append(String.format(Locale.US, " → %.2f frames per refresh: frames are shown for unequal times (judder) unless it is a whole number", ratio));
@@ -1554,7 +1579,8 @@ public final class TvDiagnostics {
                 .append(period > 0 ? String.format(Locale.US, "%.2f Hz (%s)", 1e9 / period,
                         vsyncPresentationGrid ? "present times" : "vsync") : "none")
                 .append(String.format(Locale.US, " · SF lead %.1f ms · learned extra margin %.1f ms",
-                        assumedPipelineNs / 1e6, adaptiveMarginNs / 1e6)).append('\n');
+                        assumedPipelineNs / 1e6, adaptiveMarginNs / 1e6))
+                .append(groupingNote.isEmpty() ? "" : " · " + groupingNote).append('\n');
         b.append(String.format(Locale.US, "Screen timing: the display needs a frame %.1f ms before its refresh (presentation deadline), app vsync offset %.1f ms%s\n",
                 displayDeadlineNs / 1e6, displayAppVsyncOffsetNs / 1e6,
                 measuredRefreshHz > 20 ? String.format(Locale.US, " · refresh measured %.3f Hz", measuredRefreshHz) : ""));

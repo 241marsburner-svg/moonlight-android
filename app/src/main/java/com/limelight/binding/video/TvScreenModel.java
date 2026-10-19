@@ -114,12 +114,15 @@ final class TvScreenModel {
         }
         final long slot = gridCeil(t, ref, period);
 
-        if (curSlotNs != 0L && slot <= curSlotNs) {
+        // The same refresh as the frame before (within half a refresh: the grid's reference moves
+        // a little between two frames), or an earlier one, which SurfaceFlinger can't do: frames
+        // keep their order
+        if (curSlotNs != 0L && slot < curSlotNs + period / 2) {
             if (curSlotNs - slot > 4 * period) {
                 // The grid moved (display mode switch): start over
                 reset();
             } else {
-                // Same refresh as the frame before (frames keep their order): only the newer is shown
+                // Only the newer one is shown
                 curFrames++;
                 curPtsUs = ptsUs;
                 curHostUs = hostUs;
