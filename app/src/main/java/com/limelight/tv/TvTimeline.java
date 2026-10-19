@@ -32,10 +32,14 @@ public final class TvTimeline {
     private static int calmStreak;
     private static int smoothAfterSeconds = -1;
 
+    // The screen columns come from SurfaceFlinger's timing (TvScreenModel: which refresh each frame
+    // is shown on), the PC columns from the capture time every frame carries.
     public static final String HEADER =
-            "t s;screen Hz;shown fps;sent fps;arrived fps;hitches;longest frame ms;stalled ms;" +
-            "net pauses;longest arrival gap ms;frames lost;Mbps;decode ms;TV adds ms;max TV ms;" +
-            "buffer ms;display drops;keyframe req;audio gaps;round trip ms;PC ms;frames in decoder;note";
+            "t s;screen Hz;new pictures/s;frozen refreshes;frozen: PC had nothing newer;skipped frames;uneven steps;" +
+            "longest still ms;frames replaced;sent fps;arrived fps;PC fps;longest PC gap ms;longest arrival gap ms;" +
+            "latest vs PC rhythm ms;net pauses;frames lost;Mbps;decode ms;TV ms;max TV ms;buffer ms;keyframe req;" +
+            "audio gaps;round trip ms;PC ms;frames in decoder;note";
+    private static final int COLUMNS = HEADER.split(";").length;
 
     public static synchronized void reset() {
         lines.clear();
@@ -58,7 +62,11 @@ public final class TvTimeline {
 
     /** Adds a marker line (e.g. "measuring starts"). */
     public static synchronized void mark(String note) {
-        add(String.format(Locale.US, "%.0f;;;;;;;;;;;;;;;;;;;;;;%s", secondsSinceStart(), note));
+        final StringBuilder b = new StringBuilder(String.format(Locale.US, "%.0f", secondsSinceStart()));
+        for (int i = 2; i < COLUMNS; i++) {
+            b.append(';');
+        }
+        add(b.append(';').append(note).toString());
     }
 
     /**
@@ -78,14 +86,18 @@ public final class TvTimeline {
         if (secs < 0.2) {
             return;
         }
-        // Was this second calm?
+        // Was this second calm? (By SurfaceFlinger's timing when the screen model has the
+        // refresh grid; the frame-rendered callback of this TV only echoes the requested times.)
         final double shownFps = (s.displayed - p.displayed) / secs;
         final double sentFps = (s.released - p.released) / secs;
         final double streamFps = TvDiagnostics.expectedFps();
         final double possible = hz > 20f ? Math.min(streamFps, hz) : streamFps;
-        final double seen = shownFps > 0 ? shownFps : sentFps;
-        final boolean calm = possible > 0 && seen >= possible * 0.9 &&
-                (s.hitchExtraNs - p.hitchExtraNs) / 1_000_000L <= CALM_MAX_STALL_MS &&
+        final boolean model = s.modelPictures > p.modelPictures;
+        final double pictures = (s.modelPictures - p.modelPictures) / secs;
+        final double seen = model ? pictures : (shownFps > 0 ? shownFps : sentFps);
+        final long stalledMs = model ? (s.modelFrozenNs - p.modelFrozenNs) / 1_000_000L
+                : (s.hitchExtraNs - p.hitchExtraNs) / 1_000_000L;
+        final boolean calm = possible > 0 && seen >= possible * 0.9 && stalledMs <= CALM_MAX_STALL_MS &&
                 s.framesLost == p.framesLost && s.netGaps == p.netGaps && s.keyframeRequests == p.keyframeRequests;
         calmStreak = calm ? calmStreak + 1 : 0;
         if (smoothAfterSeconds < 0 && calmStreak >= CALM_SECONDS_FOR_SMOOTH) {
@@ -94,27 +106,39 @@ public final class TvTimeline {
 
         final long decN = s.decodeSamples - p.decodeSamples;
         final long scrN = s.screenSamples - p.screenSamples;
+        final long modelScrN = s.modelScreenN - p.modelScreenN;
         final long leadN = s.leadSamples - p.leadSamples;
         final long hostN = s.hostSamples - p.hostSamples;
         final long inN = s.inFlightSamples - p.inFlightSamples;
+        final long cadN = s.hostCadenceN - p.hostCadenceN;
+        final long cadUs = s.hostCadenceSumUs - p.hostCadenceSumUs;
+        final String tvMs = modelScrN > 0 ? fmt1((s.modelScreenSumUs - p.modelScreenSumUs) / (double) modelScrN / 1000.0)
+                : scrN > 0 ? fmt1((s.screenSumUs - p.screenSumUs) / (double) scrN / 1000.0) : "";
+        final String maxTvMs = modelScrN > 0 ? fmt1(s.tickMaxModelScreenUs / 1000.0)
+                : scrN > 0 ? fmt1(s.tickMaxScreenUs / 1000.0) : "";
         add(String.format(Locale.US,
-                "%.0f;%.0f;%.1f;%.1f;%.1f;%d;%d;%d;%d;%d;%d;%.1f;%s;%s;%s;%s;%d;%d;%d;%s;%s;%s;%s",
+                "%.0f;%.0f;%s;%s;%s;%s;%s;%s;%s;%.1f;%.1f;%s;%s;%d;%s;%d;%d;%.1f;%s;%s;%s;%s;%d;%d;%s;%s;%s;%s",
                 secondsSinceStart(), hz,
-                (s.displayed - p.displayed) / secs,
-                (s.released - p.released) / secs,
+                model ? fmt1(pictures) : "",
+                model ? String.valueOf(s.modelFrozen - p.modelFrozen) : "",
+                model ? String.valueOf(s.modelFrozenPc - p.modelFrozenPc) : "",
+                model ? String.valueOf(s.modelSkipped - p.modelSkipped) : "",
+                model ? String.valueOf(s.modelUneven - p.modelUneven) : "",
+                model ? String.valueOf(s.tickModelLongestFreezeMs) : "",
+                model ? String.valueOf(s.modelReplaced - p.modelReplaced) : "",
+                sentFps,
                 (s.arrivals - p.arrivals) / secs,
-                s.displayGaps - p.displayGaps,
-                s.tickMaxFrameMs,
-                (s.hitchExtraNs - p.hitchExtraNs) / 1_000_000L,
-                s.netGaps - p.netGaps,
+                cadN > 0 && cadUs > 0 ? fmt1(1e6 * cadN / cadUs) : "",
+                s.hostFrames > p.hostFrames ? String.valueOf(s.tickMaxPcGapMs) : "",
                 s.tickMaxArrivalGapMs,
+                s.hostFrames > p.hostFrames ? String.valueOf(s.tickMaxLateMs) : "",
+                s.netGaps - p.netGaps,
                 s.framesLost - p.framesLost,
                 (s.bytes - p.bytes) * 8.0 / secs / 1e6,
                 decN > 0 ? fmt1((s.decodeSumUs - p.decodeSumUs) / (double) decN / 1000.0) : "",
-                scrN > 0 ? fmt1((s.screenSumUs - p.screenSumUs) / (double) scrN / 1000.0) : "",
-                scrN > 0 ? fmt1(s.tickMaxScreenUs / 1000.0) : "",
+                tvMs,
+                maxTvMs,
                 leadN > 0 ? fmt1((s.leadSumNs - p.leadSumNs) / (double) leadN / 1e6) : "",
-                s.unplannedDrops - p.unplannedDrops,
                 s.keyframeRequests - p.keyframeRequests,
                 s.audioGaps - p.audioGaps,
                 rttMs >= 0 ? String.valueOf(rttMs) : "",

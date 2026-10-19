@@ -35,20 +35,25 @@ import java.util.Locale;
  * test 15 to 40 s, it may have to start the app on the PC), and then measures 35 s. How long it
  * had to wait is in the log. Three scores, 0-100, higher is better:
  *
- *  Smoothness  frames shown per second against what the screen can show, minus the time the
- *              picture stood still beyond its normal cadence (hitches), frame losses (each one
- *              freezes the picture until a new keyframe) and long network pauses
+ *  Smoothness  new pictures per second against what the screen can show, minus the time the
+ *              picture stood still longer than the content's rhythm (frozen refreshes), frames that
+ *              were skipped or moved the picture unevenly, frame losses (each one freezes the
+ *              picture until a new keyframe) and long network pauses. Which refresh a frame is
+ *              shown on comes from SurfaceFlinger's timing (TvScreenModel): this TV's
+ *              frame-rendered callback only echoes the requested time.
  *  Latency     an estimate of the delay from the PC's screen to the TV's screen: PC (capture to
  *              encoded, as the PC reports it) + half the network round trip + what the TV adds
- *              (arrival to screen: decode, pacing buffer, compositor, measured per frame) + half a
- *              frame interval (a new picture waits that long on average for the next capture)
+ *              (arrival to the refresh the frame is shown on: decode, pacing buffer, compositor) +
+ *              half a frame interval (a new picture waits that long on average for the next capture)
  *  Picture     resolution (the panel is 4K, the TV scales the rest) and bits per pixel, counting
  *              AV1 as 30 % more efficient than HEVC
  *
  * Total = 40 % smoothness + 35 % latency + 25 % picture. A test that is not smooth (below 70)
  * is never picked as best while a smooth one exists, nor is one whose picture never settled after
- * the start (it is measured anyway, 20 s instead of 35). An option in stage 2 only counts as
- * better when it beats the repeated baseline by more than the measuring noise.
+ * the start (it is measured anyway, 20 s instead of 35). Stage 2 compares every option with the
+ * baseline format measured twice (stage 1 and again in stage 2, averaged): an option counts when
+ * it is faster by more than the measuring noise without losing smoothness, or clearly smoother
+ * without being slower.
  *
  * State lives in this class (one app process); the controller is TvAutoTuneActivity, the test
  * streams are ordinary Game activities that read the overrides in {@link #applyStepOverrides}.
@@ -75,7 +80,12 @@ public final class TvAutoTune {
     public static final int CODEC_H264 = 2;
 
     // Score weights (also printed in the log)
+    // Without the screen model (no refresh grid): hitches seen by the frame-rendered callback
     private static final double HITCH_POINTS_PER_STALL_MS = 0.24; // a one-refresh hitch at 60 Hz (16.7 ms) = 4 points
+    // With it: a frozen refresh at 60 Hz (16.7 ms) costs 0.8 points per minute, a skipped frame or
+    // a half-refresh uneven step about half that. One repeat and skip per second: -75.
+    private static final double FROZEN_POINTS_PER_MS = 0.05;
+    private static final double JUMP_POINTS_PER_MS = 0.025;
     private static final double LOSS_POINTS = 6;
     private static final double PAUSE_POINTS = 1;
     // A frame rate that doesn't fit the screen's refresh rate (90 fps on 60 or 120 Hz) is shown
@@ -83,10 +93,14 @@ public final class TvAutoTune {
     private static final double UNEVEN_MOTION_POINTS = 15;
     private static final double LATENCY_POINTS_PER_MS = 1.5;
     private static final double LATENCY_FREE_MS = 25;     // delay below this costs no points
-    // Stage 2: an option must beat the repeated baseline by at least this (or by the noise)
-    private static final double MIN_GAIN = 2.0;
-    // ... and must not cost more smoothness than this
+    // Stage 2, against the baseline measured twice (averaged): an option counts when it is faster
+    // by at least MIN_FASTER_MS (or the latency noise) and loses at most MAX_SMOOTH_LOSS (or the
+    // smoothness noise), or when it is smoother by MIN_SMOOTHER (or the noise) and at most
+    // MAX_SLOWER_MS slower
+    private static final double MIN_FASTER_MS = 3.0;
     private static final double MAX_SMOOTH_LOSS = 5.0;
+    private static final double MIN_SMOOTHER = 8.0;
+    private static final double MAX_SLOWER_MS = 2.0;
 
     public static final int STAGE_FORMAT = 1;
     public static final int STAGE_OPTIONS = 2;
@@ -189,6 +203,16 @@ public final class TvAutoTune {
         public double lossEventsPerMin, framesLostPerMin, decodeMs, screenMs, maxScreenMs, rttMs, hostMs, maxHostMs;
         public double leadMs, mbpsUsed, audioFecPct, onTimePct, screenHz, framesInDecoder;
         public long longestHitchMs, longestNetPauseMs, keyframes, maxFramesInDecoder;
+        // The screen by SurfaceFlinger's timing (TvScreenModel); hasModel false = no refresh grid
+        public boolean hasModel;
+        public double modelFps, frozenPerMin, frozenMsPerMin, frozenPcPerMin, skippedPerMin, skippedMsPerMin;
+        public double unevenPerMin, unevenMsPerMin, replacedPerSec, modelTvMs = -1, maxModelTvMs;
+        public long longestFreezeMs;
+        // The PC's rhythm (capture times); hasHost false = the PC sends none
+        public boolean hasHost;
+        public double pcFps, pcGapsPerMin, deliveryStallsPerMin, late8Pct;
+        public long longestPcGapMs, longestDeliveryStallMs;
+        public int runs = 1;                // > 1: the average of that many runs of the same settings
         public boolean staticPicture;
         public double settleSecs = -1;      // wait before measuring
         public boolean settled;             // false: it never was smooth for 3 s, measured anyway
@@ -234,7 +258,7 @@ public final class TvAutoTune {
 
     // ---------------- Plan ----------------
 
-    private static void buildPlan(PreferenceConfiguration current) {
+    private static void buildPlan(PreferenceConfiguration current, float screenHz) {
         plan.clear();
         if (current != null && current.width > 0 && current.height > 0) {
             final int codec = current.videoFormat == PreferenceConfiguration.FormatOption.FORCE_AV1 ? CODEC_AV1
@@ -252,9 +276,23 @@ public final class TvAutoTune {
         if (av1Tested) {
             addIfNew(Config.format("1440p AV1", 2560, 1440, 60, 80_000, CODEC_AV1));
         }
-        addIfNew(Config.format("1440p 90 fps", 2560, 1440, 90, 80_000, CODEC_HEVC));
+        // More frames than 60: the PC captures more often and the TV shows the newest frame each
+        // refresh, which lowers the delay. Only frame rates the screen can show evenly: 120 fps on
+        // a 60 Hz screen is two frames per refresh; 90 fps on 60 Hz would be 1.5 (judder).
+        final double hz = screenHz > 20f ? screenHz : 60.0;
+        final boolean even120 = evenCadence(120, hz);
+        if (even120) {
+            addIfNew(Config.format("1440p 120 fps", 2560, 1440, 120, 80_000, CODEC_HEVC));
+            if (av1Tested) {
+                addIfNew(Config.format("1440p 120 fps AV1", 2560, 1440, 120, 80_000, CODEC_AV1));
+            }
+        } else if (evenCadence(90, hz)) {
+            addIfNew(Config.format("1440p 90 fps", 2560, 1440, 90, 80_000, CODEC_HEVC));
+        }
         addIfNew(Config.format("1080p", 1920, 1080, 60, 50_000, CODEC_HEVC));
-        addIfNew(Config.format("1080p 120 fps", 1920, 1080, 120, 80_000, CODEC_HEVC));
+        if (even120) {
+            addIfNew(Config.format("1080p 120 fps", 1920, 1080, 120, 80_000, CODEC_HEVC));
+        }
         addIfNew(Config.format("4K", 3840, 2160, 60, 80_000, CODEC_HEVC));
         if (av1Tested) {
             addIfNew(Config.format("4K AV1", 3840, 2160, 60, 80_000, CODEC_AV1));
@@ -287,10 +325,16 @@ public final class TvAutoTune {
         if (framePerRefresh) {
             plan.add(f.with("aggressive timing: frames planned half a refresh closer", STAGE_OPTIONS, game, true, false, false));
         }
-        plan.add(f.with("TV smooth: a bigger buffer against Wi-Fi bunching", STAGE_OPTIONS,
-                PreferenceConfiguration.FRAME_PACING_TV_SMOOTH, false, false, false));
-        plan.add(f.with("lowest latency: every frame shown at once, no pacing", STAGE_OPTIONS,
-                PreferenceConfiguration.FRAME_PACING_MIN_LATENCY, false, false, false));
+        // With more frames than refreshes (120 fps on 60 Hz) TV game and TV smooth both group the
+        // frames by capture time (TV smooth only keeps 2 ms more spare), so only "every frame at
+        // once" is a real alternative there
+        if (framePerRefresh) {
+            plan.add(f.with("TV smooth: a bigger buffer against Wi-Fi bunching", STAGE_OPTIONS,
+                    PreferenceConfiguration.FRAME_PACING_TV_SMOOTH, false, false, false));
+        }
+        plan.add(f.with(framePerRefresh ? "lowest latency: every frame shown at once, no pacing"
+                        : "lowest latency: every frame shown at once (no grouping by capture time: a little less delay, less even motion)",
+                STAGE_OPTIONS, PreferenceConfiguration.FRAME_PACING_MIN_LATENCY, false, false, false));
         if (formatWinner.decoder != null && formatWinner.decoder.toLowerCase(Locale.US).contains("mtk")) {
             plan.add(f.with("MediaTek extra decoder keys (vendor speed keys, operating rate, ultra low latency)",
                     STAGE_OPTIONS, game, false, true, false));
@@ -371,7 +415,7 @@ public final class TvAutoTune {
         abortReason = null;
         screenHzSeen = 60f;
         startedAt = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(new Date());
-        buildPlan(PreferenceConfiguration.readPreferences(context));
+        buildPlan(PreferenceConfiguration.readPreferences(context), screenRefreshHz(context));
         // The decoder list and screen modes take a moment to read: not on the UI thread
         deviceInfo = "";
         final Context app = context.getApplicationContext();
@@ -385,6 +429,20 @@ public final class TvAutoTune {
             deviceInfo = info;
         }, "TvAutoTuneInfo").start();
         LimeLog.info("Artemide TV auto-tune: " + plan.size() + " format tests" + (av1Tested ? " (with AV1)" : " (no AV1 decoder)"));
+    }
+
+    @SuppressWarnings("deprecation")
+    private static float screenRefreshHz(Context context) {
+        try {
+            final android.view.WindowManager wm = (android.view.WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
+            final float hz = wm != null ? wm.getDefaultDisplay().getRefreshRate() : 0f;
+            if (hz > 20f) {
+                screenHzSeen = hz;
+            }
+            return hz;
+        } catch (Throwable t) {
+            return 0f;
+        }
     }
 
     /** Shortest wait before measuring, for the test that is running now. */
@@ -704,6 +762,37 @@ public final class TvAutoTune {
             final long pk = audioB[0] - audioA[0];
             r.audioFecPct = pk > 0 ? 100.0 * (audioB[2] - audioA[2]) / pk : 0;
         }
+        // The screen by SurfaceFlinger's timing
+        final long pictures = b.modelPictures - a.modelPictures;
+        r.hasModel = pictures > secs * 5;
+        if (r.hasModel) {
+            r.modelFps = pictures / secs;
+            r.frozenPerMin = (b.modelFrozen - a.modelFrozen) / mins;
+            r.frozenMsPerMin = (b.modelFrozenNs - a.modelFrozenNs) / 1e6 / mins;
+            r.frozenPcPerMin = (b.modelFrozenPc - a.modelFrozenPc) / mins;
+            r.skippedPerMin = (b.modelSkipped - a.modelSkipped) / mins;
+            r.skippedMsPerMin = (b.modelSkippedNs - a.modelSkippedNs) / 1e6 / mins;
+            r.unevenPerMin = (b.modelUneven - a.modelUneven) / mins;
+            r.unevenMsPerMin = (b.modelUnevenNs - a.modelUnevenNs) / 1e6 / mins;
+            r.replacedPerSec = (b.modelReplaced - a.modelReplaced) / secs;
+            r.longestFreezeMs = b.modelLongestFreezeNs / 1_000_000L;
+            final long mN = b.modelScreenN - a.modelScreenN;
+            r.modelTvMs = mN > 0 ? (b.modelScreenSumUs - a.modelScreenSumUs) / (double) mN / 1000.0 : -1;
+            r.maxModelTvMs = b.maxModelScreenUs / 1000.0;
+        }
+        // The PC's rhythm
+        final long hostFrames = b.hostFrames - a.hostFrames;
+        r.hasHost = hostFrames > secs * 5 && TvDiagnostics.hostTimesAvailable();
+        if (r.hasHost) {
+            final long cadN = b.hostCadenceN - a.hostCadenceN;
+            final long cadUs = b.hostCadenceSumUs - a.hostCadenceSumUs;
+            r.pcFps = cadN > 0 && cadUs > 0 ? 1e6 * cadN / cadUs : 0;
+            r.pcGapsPerMin = (b.pcGaps - a.pcGaps) / mins;
+            r.longestPcGapMs = b.maxPcGapMs;
+            r.deliveryStallsPerMin = (b.deliveryStalls - a.deliveryStalls) / mins;
+            r.longestDeliveryStallMs = b.maxDeliveryStallMs;
+            r.late8Pct = 100.0 * (b.late8 - a.late8) / hostFrames;
+        }
     }
 
     private static double clamp(double v) {
@@ -738,29 +827,58 @@ public final class TvAutoTune {
             r.smoothWhy = r.latencyWhy = r.pictureWhy = r.decoderWhy = "not measured: " + r.failure;
             return;
         }
-        // Smoothness: frames that reached the screen, minus the time the picture stood still
-        // beyond its cadence (a one-refresh hitch costs 4 points at 60 Hz, 2 at 120 Hz), frame
-        // losses (each freezes the picture until a keyframe) and long network pauses
-        final double shown = r.shownFps > 0 ? r.shownFps : r.releasedFps;
-        final double ratio = r.expectedFps > 0 ? Math.min(1.0, shown / r.expectedFps) : 0;
-        final double frames = 100 * ratio;
-        final double hitchP = HITCH_POINTS_PER_STALL_MS * r.stallMsPerMin;
         final double lossP = LOSS_POINTS * r.lossEventsPerMin;
         final double pauseP = PAUSE_POINTS * r.netPausesPerMin;
         final boolean even = evenCadence(r.config.fps, r.screenHz);
         final double unevenP = even ? 0 : UNEVEN_MOTION_POINTS;
-        r.smooth = clamp(frames - hitchP - lossP - pauseP - unevenP);
-        r.smoothWhy = String.format(Locale.US,
-                "%.0f = frames %.0f (%.1f of %.0f fps shown; PC sent %.1f) - hitches %.0f (%.1f/min, picture stood still %.0f ms/min, longest frame %d ms)" +
-                        " - losses %.0f (%.1f/min, %.1f frames/min) - network pauses %.0f (%.1f/min, longest %d ms)%s",
-                r.smooth, frames, shown, r.expectedFps, r.arrivedFps, hitchP, r.hitchesPerMin, r.stallMsPerMin, r.longestHitchMs,
-                lossP, r.lossEventsPerMin, r.framesLostPerMin, pauseP, r.netPausesPerMin, r.longestNetPauseMs,
-                even ? "" : String.format(Locale.US, " - uneven motion %.0f (%d fps on a %.0f Hz screen: frames stay up for unequal times)",
-                        unevenP, r.config.fps, r.screenHz));
+        final String cadenceWhy = even ? "" : String.format(Locale.US,
+                " - uneven motion %.0f (%d fps on a %.0f Hz screen: frames stay up for unequal times)",
+                unevenP, r.config.fps, r.screenHz);
+        final String pcWhy = !r.hasHost ? ""
+                : String.format(Locale.US, " · PC: %.1f fps captured, %.1f gaps/min where it captured nothing (longest %d ms), " +
+                                "%.1f late deliveries/min (longest %d ms), %.1f%% of frames 8 ms+ behind its rhythm",
+                        r.pcFps, r.pcGapsPerMin, r.longestPcGapMs, r.deliveryStallsPerMin, r.longestDeliveryStallMs, r.late8Pct);
+        if (r.hasModel) {
+            // Smoothness by SurfaceFlinger's timing: new pictures per refresh it can show, minus
+            // the time the picture stood still longer than the content's rhythm, and frames that
+            // were skipped or moved the picture unevenly
+            final double ratio = r.expectedFps > 0 ? Math.min(1.0, r.modelFps / r.expectedFps) : 0;
+            final double frames = 100 * ratio;
+            final double frozenP = FROZEN_POINTS_PER_MS * r.frozenMsPerMin;
+            final double jumpP = JUMP_POINTS_PER_MS * (r.skippedMsPerMin + r.unevenMsPerMin);
+            r.smooth = clamp(frames - frozenP - jumpP - lossP - pauseP - unevenP);
+            r.smoothWhy = String.format(Locale.US,
+                    "%.0f = new pictures %.0f (%.1f of %.0f per s; PC sent %.1f fps) - frozen %.0f (%.1f refreshes/min, %.0f ms/min, longest still %d ms; " +
+                            "the PC had nothing newer for %.1f/min) - skipped/uneven %.0f (%.1f skipped frames/min, %.1f uneven steps/min)" +
+                            " - losses %.0f (%.1f/min, %.1f frames/min) - network pauses %.0f (%.1f/min, longest %d ms)%s%s",
+                    r.smooth, frames, r.modelFps, r.expectedFps, r.arrivedFps, frozenP, r.frozenPerMin, r.frozenMsPerMin,
+                    r.longestFreezeMs, r.frozenPcPerMin, jumpP, r.skippedPerMin, r.unevenPerMin,
+                    lossP, r.lossEventsPerMin, r.framesLostPerMin, pauseP, r.netPausesPerMin, r.longestNetPauseMs,
+                    cadenceWhy, pcWhy);
+        } else {
+            // No refresh grid: what the frame-rendered callback saw
+            final double shown = r.shownFps > 0 ? r.shownFps : r.releasedFps;
+            final double ratio = r.expectedFps > 0 ? Math.min(1.0, shown / r.expectedFps) : 0;
+            final double frames = 100 * ratio;
+            final double hitchP = HITCH_POINTS_PER_STALL_MS * r.stallMsPerMin;
+            r.smooth = clamp(frames - hitchP - lossP - pauseP - unevenP);
+            r.smoothWhy = String.format(Locale.US,
+                    "%.0f = frames %.0f (%.1f of %.0f fps shown; PC sent %.1f) - hitches %.0f (%.1f/min, picture stood still %.0f ms/min, longest frame %d ms)" +
+                            " - losses %.0f (%.1f/min, %.1f frames/min) - network pauses %.0f (%.1f/min, longest %d ms)%s%s",
+                    r.smooth, frames, shown, r.expectedFps, r.arrivedFps, hitchP, r.hitchesPerMin, r.stallMsPerMin, r.longestHitchMs,
+                    lossP, r.lossEventsPerMin, r.framesLostPerMin, pauseP, r.netPausesPerMin, r.longestNetPauseMs,
+                    cadenceWhy, pcWhy);
+        }
 
         // Latency: PC + network + TV + the wait for the next capture
-        double tvMs = r.screenMs;
-        String tvHow = "measured arrival to screen";
+        double tvMs = r.modelTvMs;
+        String tvHow = "arrival to the refresh it is shown on, SurfaceFlinger's timing";
+        double tvMax = r.maxModelTvMs;
+        if (tvMs <= 0) {
+            tvMs = r.screenMs;
+            tvHow = "frame-rendered callback";
+            tvMax = r.maxScreenMs;
+        }
         if (tvMs <= 0) {
             // No frame-rendered times on this TV: estimate from decode + buffer + one refresh
             tvMs = Math.max(0, r.decodeMs) + r.leadMs + 1000.0 / Math.max(1.0, r.expectedFps);
@@ -776,7 +894,7 @@ public final class TvAutoTune {
                 r.latency, LATENCY_POINTS_PER_MS, r.latencyMs, LATENCY_FREE_MS,
                 r.hostMs >= 0 ? String.format(Locale.US, "%.1f ms [capture to encoded, max %.1f]", r.hostMs, r.maxHostMs)
                         : "? [the PC sent no timing: counted as 0]",
-                net, r.rttMs, tvMs, tvHow, r.decodeMs, r.leadMs, r.maxScreenMs, capture);
+                net, r.rttMs, tvMs, tvHow, r.decodeMs, r.leadMs, tvMax, capture);
 
         // Picture: resolution and bits per pixel (0.15 bpp is plenty for HEVC game streaming;
         // AV1 needs about 30 % fewer bits for the same picture, H.264 about 60 % more)
@@ -837,18 +955,59 @@ public final class TvAutoTune {
         return null;
     }
 
-    private static double requiredGain() {
-        return Math.max(MIN_GAIN, noise >= 0 ? noise : MIN_GAIN);
+    // The stage 2 baseline: the format's standard options, measured in stage 1 and again in stage 2
+    private static Result baseline;          // averaged when both runs exist, else the one run
+    private static double latencyNoise = -1, smoothNoise = -1;
+
+    private static double requiredFaster() {
+        return Math.max(MIN_FASTER_MS, latencyNoise >= 0 ? latencyNoise : 0);
     }
 
-    /** Does this option beat the repeated baseline clearly, without costing smoothness? */
+    private static double allowedSmoothLoss() {
+        return Math.max(MAX_SMOOTH_LOSS, smoothNoise >= 0 ? smoothNoise : 0);
+    }
+
+    private static double requiredSmoother() {
+        return Math.max(MIN_SMOOTHER, smoothNoise >= 0 ? smoothNoise : 0);
+    }
+
+    /**
+     * Does this option beat the baseline clearly? Faster by more than the noise without losing
+     * smoothness (and smooth enough to use), or clearly smoother without being slower.
+     */
     private static boolean helps(Result r) {
-        if (r == null || !r.ok || optionsBase == null) {
+        if (r == null || !r.ok || baseline == null) {
             return false;
         }
-        return r.total >= optionsBase.total + requiredGain() &&
-                r.smooth >= optionsBase.smooth - MAX_SMOOTH_LOSS &&
-                (smoothOk(r) || !smoothOk(optionsBase));
+        final boolean faster = r.latencyMs <= baseline.latencyMs - requiredFaster();
+        final boolean keepsSmooth = r.smooth >= baseline.smooth - allowedSmoothLoss() && (smoothOk(r) || !smoothOk(baseline));
+        final boolean smoother = r.smooth >= baseline.smooth + requiredSmoother() && smoothOk(r);
+        final boolean notSlower = r.latencyMs <= baseline.latencyMs + MAX_SLOWER_MS;
+        return (faster && keepsSmooth) || (smoother && notSlower);
+    }
+
+    /** The average of two runs of the same settings (scores and the figures shown in the tables). */
+    private static Result average(Result a, Result b) {
+        final Result m = new Result(b.config);
+        m.ok = a.ok && b.ok;
+        m.runs = a.runs + b.runs;
+        m.secs = a.secs + b.secs;
+        m.smooth = (a.smooth + b.smooth) / 2;
+        m.latency = (a.latency + b.latency) / 2;
+        m.picture = (a.picture + b.picture) / 2;
+        m.total = (a.total + b.total) / 2;
+        m.latencyMs = (a.latencyMs + b.latencyMs) / 2;
+        m.decodeMs = (a.decodeMs + b.decodeMs) / 2;
+        m.settled = a.settled && b.settled;
+        m.settleSecs = Math.max(a.settleSecs, b.settleSecs);
+        m.screenHz = b.screenHz;
+        m.codecUsed = b.codecUsed;
+        m.decoder = b.decoder;
+        m.verified = b.verified;
+        m.staticPicture = a.staticPicture || b.staticPicture;
+        m.smoothWhy = String.format(Locale.US, "average of %.0f and %.0f", a.smooth, b.smooth);
+        m.latencyWhy = String.format(Locale.US, "average of %.1f and %.1f ms", a.latencyMs, b.latencyMs);
+        return m;
     }
 
     /** Works out the recommendation from what has been measured so far. */
@@ -863,8 +1022,13 @@ public final class TvAutoTune {
                 break;
             }
         }
-        // Noise: the same settings measured in stage 1 and again in stage 2
+        // Noise: the same settings measured in stage 1 and again in stage 2. The baseline is
+        // their average: one run can be unlucky (the PC busy for a moment, Wi-Fi), and every
+        // option is compared with it.
         noise = -1;
+        latencyNoise = -1;
+        smoothNoise = -1;
+        baseline = optionsBase;
         Result firstRun = null;
         if (optionsBase != null) {
             for (Result r : results) {
@@ -876,6 +1040,9 @@ public final class TvAutoTune {
             }
             if (firstRun != null) {
                 noise = Math.abs(firstRun.total - optionsBase.total);
+                latencyNoise = Math.abs(firstRun.latencyMs - optionsBase.latencyMs);
+                smoothNoise = Math.abs(firstRun.smooth - optionsBase.smooth);
+                baseline = average(firstRun, optionsBase);
             }
         }
         recommended = formatWinner;
@@ -892,13 +1059,15 @@ public final class TvAutoTune {
             return;
         }
 
-        // Pacing: the best of the pacing variants that clearly beats the baseline
+        // Pacing: of the pacing variants that clearly beat the baseline, the fastest one
+        // (an option only gets here when it kept the picture smooth)
         Result pacing = null;
         for (Result r : results) {
-            if (r.config.stage != STAGE_OPTIONS || r.config.extraKeys || r.config.syncDecode || r == optionsBase) {
+            if (r.config.stage != STAGE_OPTIONS || r.config.extraKeys || r.config.syncDecode || r == optionsBase ||
+                    r.config.standardOptions()) {
                 continue;
             }
-            if (helps(r) && (pacing == null || r.total > pacing.total)) {
+            if (helps(r) && (pacing == null || r.latencyMs < pacing.latencyMs)) {
                 pacing = r;
             }
         }
@@ -913,10 +1082,10 @@ public final class TvAutoTune {
         final Config combo = base.with("recommended", STAGE_FINAL, pacingMode, aggressive, useKeys, useSync);
 
         // What to recommend: the combination if it was measured (final check) and holds up,
-        // otherwise the best single measured option, otherwise the baseline
-        Result bestSingle = optionsBase;
+        // otherwise the best single helpful option, otherwise the baseline (averaged)
+        Result bestSingle = baseline;
         for (Result r : new Result[] { pacing, useKeys ? keys : null, useSync ? sync : null }) {
-            if (r != null && r.total > bestSingle.total) {
+            if (r != null && (bestSingle == baseline || r.latencyMs < bestSingle.latencyMs)) {
                 bestSingle = r;
             }
         }
@@ -930,38 +1099,45 @@ public final class TvAutoTune {
         if (changes >= 2) {
             recommendedConfigBeforeFinal = combo;
         }
-        if (finalCheck != null && finalCheck.total >= bestSingle.total - requiredGain() &&
-                finalCheck.smooth >= bestSingle.smooth - MAX_SMOOTH_LOSS) {
+        if (finalCheck != null && finalCheck.latencyMs <= bestSingle.latencyMs + MAX_SLOWER_MS &&
+                finalCheck.smooth >= bestSingle.smooth - allowedSmoothLoss() && smoothOk(finalCheck)) {
             recommended = finalCheck;
         } else {
             recommended = bestSingle;
         }
         if (firstRun != null) {
-            why.append(String.format(Locale.US, "Same settings measured twice: total %.0f and %.0f, so a difference below %.0f points is noise.",
-                    firstRun.total, optionsBase.total, requiredGain()));
+            why.append(String.format(Locale.US,
+                    "Same settings measured twice: smoothness %.0f and %.0f, delay %.1f and %.1f ms. The baseline is their average; " +
+                            "an option counts when it is %.0f+ ms faster without losing more than %.0f smoothness, or %.0f+ smoother and at most %.0f ms slower.",
+                    firstRun.smooth, optionsBase.smooth, firstRun.latencyMs, optionsBase.latencyMs,
+                    requiredFaster(), allowedSmoothLoss(), requiredSmoother(), MAX_SLOWER_MS));
         } else {
-            why.append(String.format(Locale.US, "A difference below %.0f points counts as noise.", requiredGain()));
+            why.append(String.format(Locale.US, "An option counts when it is %.0f+ ms faster without losing more than %.0f smoothness, or %.0f+ smoother and at most %.0f ms slower.",
+                    requiredFaster(), allowedSmoothLoss(), requiredSmoother(), MAX_SLOWER_MS));
         }
         if (pacing != null) {
-            why.append("\n").append(pacing.config.describeOptions()).append(" helped: total ")
-                    .append(signed1(pacing.total - optionsBase.total)).append(", delay ")
-                    .append(signed(pacing.latencyMs - optionsBase.latencyMs, " ms")).append('.');
+            why.append("\n").append(pacing.config.describeOptions()).append(" helped: delay ")
+                    .append(signed(pacing.latencyMs - baseline.latencyMs, " ms")).append(", smoothness ")
+                    .append(signed(pacing.smooth - baseline.smooth, "")).append('.');
         } else {
-            why.append(String.format(Locale.US, "\nNo other pacing beat TV game by %.0f points or more without losing smoothness.", requiredGain()));
+            why.append("\nNo other pacing beat TV game clearly.");
         }
         if (keys != null) {
-            why.append(String.format(Locale.US, "\nMediaTek extra keys: total %s, decode %+.1f ms → %s.",
-                    signed1(keys.total - optionsBase.total), keys.decodeMs - optionsBase.decodeMs,
-                    useKeys ? "use them" : "not enough to count"));
+            why.append(String.format(Locale.US, "\nMediaTek extra keys: delay %s, smoothness %s, decode %+.1f ms → %s.",
+                    signed(keys.latencyMs - baseline.latencyMs, " ms"), signed(keys.smooth - baseline.smooth, ""),
+                    keys.decodeMs - baseline.decodeMs, useKeys ? "use them" : "not enough to count"));
         }
         if (sync != null) {
-            why.append(String.format(Locale.US, "\nSync decoding: total %s, delay %s → %s.",
-                    signed1(sync.total - optionsBase.total), signed(sync.latencyMs - optionsBase.latencyMs, " ms"),
+            why.append(String.format(Locale.US, "\nSync decoding: delay %s, smoothness %s → %s.",
+                    signed(sync.latencyMs - baseline.latencyMs, " ms"), signed(sync.smooth - baseline.smooth, ""),
                     useSync ? "use it" : "keep async"));
         }
         if (finalCheck != null) {
-            why.append(String.format(Locale.US, "\nFinal check (together): total %.0f%s.", finalCheck.total,
-                    recommended == finalCheck ? ", so they are used together" : ", worse than the best single option, which is used instead"));
+            why.append(String.format(Locale.US, "\nFinal check (together): smoothness %.0f, delay %.1f ms%s.", finalCheck.smooth, finalCheck.latencyMs,
+                    recommended == finalCheck ? ", so they are used together" : ", not better than the best single option, which is used instead"));
+        }
+        if (recommended == baseline && baseline.runs > 1) {
+            why.append("\nThe figures shown for it are the average of its two runs.");
         }
         recommendation = why.toString();
     }
@@ -1026,12 +1202,33 @@ public final class TvAutoTune {
 
     // ---------------- Text and log file ----------------
 
+    private static String f1(double v) {
+        return String.format(Locale.US, "%.1f", v);
+    }
+
     private static String latencyCell(Result r) {
         return String.format(Locale.US, "%3.0f (%2.0f ms)", r.latency, Math.max(0, r.latencyMs));
     }
 
+    /** A short note on PC-side trouble in a test (gaps where it captured nothing, late deliveries). */
+    private static String pcNote(Result r) {
+        if (!r.ok || !r.hasHost) {
+            return "";
+        }
+        if (r.pcGapsPerMin >= 6) {
+            return String.format(Locale.US, "  (PC stalled %.0f/min)", r.pcGapsPerMin);
+        }
+        if (r.deliveryStallsPerMin >= 6) {
+            return String.format(Locale.US, "  (frames arrived late %.0f/min)", r.deliveryStallsPerMin);
+        }
+        return "";
+    }
+
     public static synchronized String summaryText() {
         final StringBuilder b = new StringBuilder(4096);
+        if (!results.isEmpty()) {
+            decide();
+        }
         // Stage 1
         final List<Result> formats = new ArrayList<>();
         for (Result r : ranked()) {
@@ -1045,9 +1242,9 @@ public final class TvAutoTune {
         for (Result r : formats) {
             final String name = r.config.standardOptions() ? r.config.describeFormat() : r.config.describe();
             if (r.ok) {
-                b.append(String.format(Locale.US, "%-3d %-46s %5.0f %6.0f %-13s %7.0f%s%s\n", rank, name,
+                b.append(String.format(Locale.US, "%-3d %-46s %5.0f %6.0f %-13s %7.0f%s%s%s\n", rank, name,
                         r.total, r.smooth, latencyCell(r), r.picture, r.staticPicture ? "  (static picture)" : "",
-                        !r.settled && r.settleSecs >= 0 ? "  (never smooth)" : ""));
+                        !r.settled && r.settleSecs >= 0 ? "  (never smooth)" : "", pcNote(r)));
             } else {
                 b.append(String.format(Locale.US, "%-3s %-46s failed: %s\n", "-", name, r.failure));
             }
@@ -1089,7 +1286,12 @@ public final class TvAutoTune {
         }
         if (!options.isEmpty()) {
             b.append("\nLATENCY OPTIONS on ").append(options.get(0).config.describeFormat()).append('\n');
-            b.append(String.format(Locale.US, "%-46s %5s %6s %-13s %s\n", "Option", "Total", "Smooth", "Latency", "vs. TV game again"));
+            b.append(String.format(Locale.US, "%-46s %5s %6s %-13s %s\n", "Option", "Total", "Smooth", "Latency",
+                    baseline != null && baseline.runs > 1 ? "vs. baseline (TV game, average of 2 runs)" : "vs. baseline (TV game)"));
+            if (baseline != null && baseline.runs > 1) {
+                b.append(String.format(Locale.US, "%-46s %5.0f %6.0f %-13s -\n", "TV game, average of both runs",
+                        baseline.total, baseline.smooth, latencyCell(baseline)));
+            }
             boolean ranBefore = false;
             for (Result r : formats) {
                 if (r.config.sameFormat(options.get(0).config) && r.config.standardOptions()) {
@@ -1104,12 +1306,13 @@ public final class TvAutoTune {
                     continue;
                 }
                 String vs = "-";
-                if (base != null && r != base) {
-                    vs = signed(r.total - base.total, "") + " (" + signed(r.latencyMs - base.latencyMs, " ms") + ")";
+                if (baseline != null && r != base) {
+                    vs = signed(r.latencyMs - baseline.latencyMs, " ms") + ", smoothness " + signed(r.smooth - baseline.smooth, "") +
+                            (helps(r) ? " → helps" : "");
                 }
-                b.append(String.format(Locale.US, "%-46s %5.0f %6.0f %-13s %s%s%s\n", name, r.total, r.smooth, latencyCell(r), vs,
+                b.append(String.format(Locale.US, "%-46s %5.0f %6.0f %-13s %s%s%s%s\n", name, r.total, r.smooth, latencyCell(r), vs,
                         !r.settled && r.settleSecs >= 0 ? "  (never smooth)" : "",
-                        r.verified.isEmpty() ? "" : "  (not as planned: " + r.verified + ")"));
+                        r.verified.isEmpty() ? "" : "  (not as planned: " + r.verified + ")", pcNote(r)));
             }
         }
         for (Result r : results) {
@@ -1125,11 +1328,9 @@ public final class TvAutoTune {
         }
 
         // The outcome
-        if (!results.isEmpty()) {
-            decide();
-        }
         if (recommended != null) {
-            b.append("\nRECOMMENDED: ").append(recommended.config.describe()).append('\n');
+            b.append("\nRECOMMENDED: ").append(recommended.config.describe())
+                    .append(recommended.runs > 1 ? " (average of 2 runs)" : "").append('\n');
             b.append(String.format(Locale.US, "  total %.0f · smoothness %.0f · latency %s · picture %.0f\n",
                     recommended.total, recommended.smooth, latencyCell(recommended), recommended.picture));
         }
@@ -1203,34 +1404,47 @@ public final class TvAutoTune {
         b.append("RESULTS\n").append(summaryText()).append('\n');
         b.append("SCORES (0-100, higher is better)\n");
         b.append(String.format(Locale.US,
-                " Smoothness = 100 x shown/possible frames - %.2f per ms/min the picture stood still beyond its cadence" +
-                        " - %.0f per frame loss/min - %.0f per network pause (40 ms+) per minute" +
-                        " - %.0f when the frame rate doesn't fit the screen's refresh rate (uneven motion)\n",
-                HITCH_POINTS_PER_STALL_MS, LOSS_POINTS, PAUSE_POINTS, UNEVEN_MOTION_POINTS));
-        b.append(String.format(Locale.US, " Latency    = 100 - %.1f x (ms - %.0f), ms = PC (capture to encoded) + round trip/2 + TV (arrival to screen) + half a frame interval\n",
+                " Smoothness = 100 x new pictures/possible - %.3f per ms/min the picture stood still longer than the content's rhythm" +
+                        " - %.3f per ms/min of skipped frames and uneven steps - %.0f per frame loss/min - %.0f per network pause (40 ms+) per minute" +
+                        " - %.0f when the frame rate doesn't fit the screen's refresh rate (uneven motion)." +
+                        " Which refresh shows which frame comes from SurfaceFlinger's timing (the display's presentation deadline and its refresh grid):" +
+                        " this TV's frame-rendered callback only echoes the requested time. Without a refresh grid: %.2f per ms/min of hitches the callback saw.\n",
+                FROZEN_POINTS_PER_MS, JUMP_POINTS_PER_MS, LOSS_POINTS, PAUSE_POINTS, UNEVEN_MOTION_POINTS, HITCH_POINTS_PER_STALL_MS));
+        b.append(String.format(Locale.US, " Latency    = 100 - %.1f x (ms - %.0f), ms = PC (capture to encoded) + round trip/2 + TV (arrival to the refresh it is shown on) + half a frame interval\n",
                 LATENCY_POINTS_PER_MS, LATENCY_FREE_MS));
         b.append(" Picture    = resolution (4K 100, 1440p 85, 1080p 70) x (0.6 + 0.4 x bits-per-pixel/0.15, capped; AV1 x1.3)\n");
         b.append(" Total      = 40% smoothness + 35% latency + 25% picture; tests below 70 smoothness rank last\n");
-        b.append(String.format(Locale.US, " An option counts as better when its total beats the repeated baseline by %.0f+ points (or by the measured noise) and costs at most %.0f smoothness\n\n",
-                MIN_GAIN, MAX_SMOOTH_LOSS));
+        b.append(String.format(Locale.US, " Stage 2: the baseline is the best format measured twice (averaged). An option counts when it is %.0f+ ms faster" +
+                        " (or more than the two runs differed) and loses at most %.0f smoothness (or the noise), or when it is %.0f+ smoother and at most %.0f ms slower." +
+                        " The final check counts when it is not slower than the best single option by %.0f+ ms and keeps its smoothness.\n\n",
+                MIN_FASTER_MS, MAX_SMOOTH_LOSS, MIN_SMOOTHER, MAX_SLOWER_MS, MAX_SLOWER_MS));
         b.append("WHY EACH TEST GOT ITS SCORES\n").append(detailsText());
         b.append("DETAILS\n");
-        b.append("test;stage;settings;ok;smooth after s;total;smooth;latency;latency ms;picture;shown fps;possible fps;PC sent fps;screen Hz;" +
-                "hitches/min;stood still ms/min;longest hitch ms;net pauses/min;longest pause ms;loss events/min;frames lost/min;" +
-                "keyframe requests;PC ms;decode ms;frames in decoder;TV adds ms (arrival to screen);max TV ms;round trip ms;buffer ms;" +
-                "Mbps used;audio FEC %;on time %;codec used;decoder;note\n");
+        b.append("test;stage;settings;ok;smooth after s;total;smooth;latency;latency ms;picture;new pictures/s;possible fps;PC sent fps;screen Hz;" +
+                "frozen refreshes/min;frozen ms/min;longest still ms;PC had nothing newer/min;skipped frames/min;uneven steps/min;frames replaced/s;" +
+                "PC fps (capture times);PC gaps/min;longest PC gap ms;late deliveries/min;longest late delivery ms;frames 8 ms+ behind %;" +
+                "net pauses/min;longest pause ms;loss events/min;frames lost/min;keyframe requests;PC ms;decode ms;frames in decoder;" +
+                "TV ms (to the refresh shown on);max TV ms;callback TV ms;round trip ms;buffer ms;Mbps used;audio FEC %;codec used;decoder;note\n");
         int n = 1;
         for (Result r : results) {
             b.append(String.format(Locale.US,
-                    "%d;%d;%s;%s;%s;%.0f;%.0f;%.0f;%.1f;%.0f;%.1f;%.0f;%.1f;%.0f;%.1f;%.0f;%d;%.1f;%d;%.1f;%.1f;%d;%.1f;%.1f;%.2f;%.1f;%.0f;%.0f;%.1f;%.1f;%.2f;%.0f;%s;%s;%s\n",
+                    "%d;%d;%s;%s;%s;%.0f;%.0f;%.0f;%.1f;%.0f;%s;%.0f;%.1f;%.0f;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;" +
+                            "%.1f;%d;%.1f;%.1f;%d;%.1f;%.1f;%.2f;%s;%s;%.1f;%.0f;%.1f;%.1f;%.2f;%s;%s;%s\n",
                     n++, r.config.stage, r.config.describe(), r.ok ? "yes" : "no",
                     r.settleSecs < 0 ? "" : (r.settled ? String.format(Locale.US, "%.0f", r.settleSecs)
                             : String.format(Locale.US, "not within %.0f", r.settleSecs)),
                     r.total, r.smooth, r.latency, r.latencyMs, r.picture,
-                    r.shownFps, r.expectedFps, r.arrivedFps, r.screenHz, r.hitchesPerMin, r.stallMsPerMin, r.longestHitchMs,
+                    r.hasModel ? f1(r.modelFps) : "", r.expectedFps, r.arrivedFps, r.screenHz,
+                    r.hasModel ? f1(r.frozenPerMin) : "", r.hasModel ? f1(r.frozenMsPerMin) : "",
+                    r.hasModel ? String.valueOf(r.longestFreezeMs) : "", r.hasModel ? f1(r.frozenPcPerMin) : "",
+                    r.hasModel ? f1(r.skippedPerMin) : "", r.hasModel ? f1(r.unevenPerMin) : "", r.hasModel ? f1(r.replacedPerSec) : "",
+                    r.hasHost ? String.format(Locale.US, "%.2f", r.pcFps) : "", r.hasHost ? f1(r.pcGapsPerMin) : "",
+                    r.hasHost ? String.valueOf(r.longestPcGapMs) : "", r.hasHost ? f1(r.deliveryStallsPerMin) : "",
+                    r.hasHost ? String.valueOf(r.longestDeliveryStallMs) : "", r.hasHost ? f1(r.late8Pct) : "",
                     r.netPausesPerMin, r.longestNetPauseMs, r.lossEventsPerMin, r.framesLostPerMin, r.keyframes,
-                    r.hostMs, r.decodeMs, r.framesInDecoder, r.screenMs, r.maxScreenMs, r.rttMs, r.leadMs, r.mbpsUsed,
-                    r.audioFecPct, r.onTimePct, r.codecUsed, r.decoder,
+                    r.hostMs, r.decodeMs, r.framesInDecoder,
+                    r.modelTvMs > 0 ? f1(r.modelTvMs) : "", r.modelTvMs > 0 ? f1(r.maxModelTvMs) : "",
+                    r.screenMs, r.rttMs, r.leadMs, r.mbpsUsed, r.audioFecPct, r.codecUsed, r.decoder,
                     !r.ok ? r.failure : (r.staticPicture ? "static picture: compare with care" : "")));
         }
         b.append("\nPER TEST: STREAM REPORT, SETTINGS IN USE AND TIMELINE (one line per second)\n");

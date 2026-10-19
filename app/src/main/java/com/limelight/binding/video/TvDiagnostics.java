@@ -78,6 +78,8 @@ public final class TvDiagnostics {
     private static long snapReleased, snapDisplayed, snapGaps, snapLate, snapTrims;
     private static long snapLeadSum, snapLeadSamples, snapInputWaits, snapKeyframes, snapSkipped;
     private static long snapPresentSamples, snapPresentOffsetSum, snapPresentSlips;
+    private static long snapModelPictures, snapModelFrozen, snapModelFrozenPc, snapModelUneven, snapModelSkipped;
+    private static long snapModelScreenSum, snapModelScreenN, snapPcGaps, snapDeliveryStalls;
     private static int snapUnderruns;
 
     // --- Collection switch ---
@@ -149,6 +151,227 @@ public final class TvDiagnostics {
             sessionMaxInFlight = frames;
         }
     }
+    // --- The PC's rhythm: capture times sent with every frame (see TvFrameTimes) ---
+    // Receive thread only, except the counters
+    private static long lastHostUs = -1, lastHostReceiveUs, lastHostArrivalUs;
+    private static long minTransitUs;
+    private static int hostChecks, hostMismatches;
+    private static volatile boolean hostTimesSynthetic;
+    private static volatile long pcPeriodEmaNs;       // the PC's frame interval (its clock), gaps left out
+    private static final AtomicLong hostFrames = new AtomicLong();
+    private static final AtomicLong hostCadenceSumUs = new AtomicLong();
+    private static final AtomicLong hostCadenceN = new AtomicLong();
+    // The PC captured nothing for 40 ms+ (frames missing at the source)
+    private static final AtomicLong pcGaps = new AtomicLong();
+    private static final AtomicLong pcGapExtraMs = new AtomicLong();
+    private static volatile long maxPcGapMs, windowMaxPcGapMs, tickMaxPcGapMs;
+    // Captured in time, but arrived 40 ms+ after the frame before (encoder, PC network stack, Wi-Fi)
+    private static final AtomicLong deliveryStalls = new AtomicLong();
+    private static volatile long maxDeliveryStallMs, windowMaxDeliveryStallMs;
+    // Frames that arrived later than the PC's rhythm (against the fastest delivery seen lately)
+    private static final AtomicLong late4 = new AtomicLong(), late8 = new AtomicLong(), late16 = new AtomicLong();
+    private static volatile long tickMaxLateMs;
+
+    /**
+     * Receive thread, once per frame: when it arrived (CLOCK_MONOTONIC µs; receive = first
+     * packet, arrival = complete) and when the PC captured it (PC clock µs).
+     */
+    public static void onHostFrame(long receiveUs, long arrivalUs, long hostUs) {
+        if (!collecting || hostUs < 0) {
+            return;
+        }
+        final long lastH = lastHostUs, lastR = lastHostReceiveUs, lastA = lastHostArrivalUs;
+        lastHostUs = hostUs;
+        lastHostReceiveUs = receiveUs;
+        lastHostArrivalUs = arrivalUs;
+        final long transit = arrivalUs - hostUs;
+        if (lastH < 0) {
+            minTransitUs = transit;
+            return;
+        }
+        final long dH = hostUs - lastH;
+        if (dH <= 0 || dH > 2_000_000L) {
+            // New stream or the PC's clock started over
+            minTransitUs = transit;
+            return;
+        }
+        // Some PCs send no capture times; the streaming core then makes them up from the
+        // receive time, and they would only repeat the arrival pattern
+        if (hostChecks < 600) {
+            hostChecks++;
+            if (Math.abs(dH - (receiveUs - lastR)) > 100) {
+                hostMismatches++;
+            }
+            if (hostChecks == 600) {
+                hostTimesSynthetic = hostMismatches == 0;
+            }
+        }
+        if (hostTimesSynthetic) {
+            return;
+        }
+        hostFrames.incrementAndGet();
+        final long periodUs = Math.max(1000L, expectedFramePeriodNs / 1000L);
+        final long gapUs = Math.max(40_000L, periodUs * 5 / 2);
+        if (dH <= gapUs) {
+            hostCadenceSumUs.addAndGet(dH);
+            hostCadenceN.incrementAndGet();
+            final long ema = pcPeriodEmaNs;
+            final long dNs = dH * 1000L;
+            pcPeriodEmaNs = ema == 0 ? dNs : ema + (dNs - ema) / 32;
+        } else {
+            pcGaps.incrementAndGet();
+            pcGapExtraMs.addAndGet(Math.max(0L, (dH - periodUs) / 1000L));
+            final long ms = dH / 1000L;
+            if (ms > maxPcGapMs) {
+                maxPcGapMs = ms;
+            }
+            if (ms > windowMaxPcGapMs) {
+                windowMaxPcGapMs = ms;
+            }
+            if (ms > tickMaxPcGapMs) {
+                tickMaxPcGapMs = ms;
+            }
+        }
+        final long dA = arrivalUs - lastA;
+        if (dA > gapUs && dA < 2_000_000L && dH < dA - Math.max(10_000L, periodUs)) {
+            deliveryStalls.incrementAndGet();
+            final long ms = dA / 1000L;
+            if (ms > maxDeliveryStallMs) {
+                maxDeliveryStallMs = ms;
+            }
+            if (ms > windowMaxDeliveryStallMs) {
+                windowMaxDeliveryStallMs = ms;
+            }
+        }
+        // How late against the PC's rhythm. The fastest delivery seen lately counts as on time;
+        // it may rise slowly (100 ppm), since the PC's and the TV's clocks drift apart a little.
+        long min = minTransitUs + dH / 10_000L;
+        if (transit < min) {
+            min = transit;
+        }
+        minTransitUs = min;
+        final long late = transit - min;
+        if (late >= 4000) {
+            late4.incrementAndGet();
+            if (late >= 8000) {
+                late8.incrementAndGet();
+                if (late >= 16000) {
+                    late16.incrementAndGet();
+                }
+            }
+        }
+        if (late / 1000 > tickMaxLateMs) {
+            tickMaxLateMs = late / 1000;
+        }
+    }
+
+    /** The PC's frame interval (its clock; the stream's frame interval until it is known). */
+    public static long pcFramePeriodNs() {
+        final long p = pcPeriodEmaNs;
+        return p > 0 ? p : expectedFramePeriodNs;
+    }
+
+    /** False when the PC sends no capture times (then the PC figures are not available). */
+    public static boolean hostTimesAvailable() {
+        return !hostTimesSynthetic;
+    }
+
+    // --- What reaches the screen, by SurfaceFlinger's timing (TvScreenModel) ---
+    private static final AtomicLong modelPictures = new AtomicLong();     // refreshes with a new picture
+    private static final AtomicLong modelRefreshes = new AtomicLong();
+    private static final AtomicLong modelFrozen = new AtomicLong();
+    private static final AtomicLong modelFrozenNs = new AtomicLong();
+    private static final AtomicLong modelFrozenPc = new AtomicLong();
+    private static final AtomicLong modelFrozenPcNs = new AtomicLong();
+    private static final AtomicLong modelSkippedNs = new AtomicLong();
+    private static final AtomicLong modelSkipped = new AtomicLong();
+    private static final AtomicLong modelUneven = new AtomicLong();
+    private static final AtomicLong modelUnevenNs = new AtomicLong();
+    private static final AtomicLong modelReplaced = new AtomicLong();
+    private static final AtomicLong modelScreenSumUs = new AtomicLong();
+    private static final AtomicLong modelScreenN = new AtomicLong();
+    private static volatile long modelLongestFreezeNs, windowModelLongestFreezeNs, tickModelLongestFreezeNs;
+    private static volatile long windowMaxModelScreenUs, tickMaxModelScreenUs;
+    // Frame-rendered callback: does it only repeat the requested time?
+    private static final AtomicLong renderEcho = new AtomicLong();
+    private static final AtomicLong renderChecked = new AtomicLong();
+    private static volatile long displayDeadlineNs, displayAppVsyncOffsetNs;
+    // The screen's refresh rate, measured from vsync timestamps over a long time
+    private static volatile double measuredRefreshHz;
+    private static volatile int measuredRefreshSecs;
+
+    static void setDisplayTiming(long presentationDeadlineNs, long appVsyncOffsetNs) {
+        displayDeadlineNs = presentationDeadlineNs;
+        displayAppVsyncOffsetNs = appVsyncOffsetNs;
+    }
+
+    static void setMeasuredRefresh(double hz, int seconds) {
+        measuredRefreshHz = hz;
+        measuredRefreshSecs = seconds;
+    }
+
+    /** The screen's refresh rate measured over a long time (0 = not yet). */
+    public static double measuredRefreshHz() {
+        return measuredRefreshHz;
+    }
+
+    static void onModelReplaced() {
+        modelReplaced.incrementAndGet();
+    }
+
+    /** A shown frame: arrival to the refresh it is shown on (µs). */
+    static void onModelScreen(long us) {
+        if (us > 0 && us < 1_000_000L) {
+            modelScreenSumUs.addAndGet(us);
+            modelScreenN.incrementAndGet();
+            if (us > windowMaxModelScreenUs) {
+                windowMaxModelScreenUs = us;
+            }
+            if (us > tickMaxModelScreenUs) {
+                tickMaxModelScreenUs = us;
+            }
+        }
+    }
+
+    /** A new picture after `refreshes` refreshes, see TvScreenModel. */
+    static void onModelStep(long refreshes, long frozen, long frozenPc, long skippedNs, long unevenNs, long periodNs) {
+        modelPictures.incrementAndGet();
+        modelRefreshes.addAndGet(refreshes);
+        if (frozen > 0) {
+            modelFrozen.addAndGet(frozen);
+            modelFrozenNs.addAndGet(frozen * periodNs);
+            final long stood = (frozen + 1) * periodNs;
+            if (stood > modelLongestFreezeNs) {
+                modelLongestFreezeNs = stood;
+            }
+            if (stood > windowModelLongestFreezeNs) {
+                windowModelLongestFreezeNs = stood;
+            }
+            if (stood > tickModelLongestFreezeNs) {
+                tickModelLongestFreezeNs = stood;
+            }
+        }
+        if (frozenPc > 0) {
+            modelFrozenPc.addAndGet(frozenPc);
+            modelFrozenPcNs.addAndGet(frozenPc * periodNs);
+        }
+        if (skippedNs > 0) {
+            modelSkippedNs.addAndGet(skippedNs);
+            modelSkipped.addAndGet(Math.max(1L, Math.round(skippedNs / (double) Math.max(1L, pcFramePeriodNs()))));
+        }
+        if (unevenNs > 0) {
+            modelUneven.incrementAndGet();
+            modelUnevenNs.addAndGet(unevenNs);
+        }
+    }
+
+    static void onRenderEchoCheck(boolean echo) {
+        renderChecked.incrementAndGet();
+        if (echo) {
+            renderEcho.incrementAndGet();
+        }
+    }
+
     // The screen's refresh period (fallback when the pacer has no vsync grid)
     private static volatile long displayPeriodNs;
     private static volatile String decoderName = "?";
@@ -223,8 +446,16 @@ public final class TvDiagnostics {
         public long arrivals, hitchExtraNs;
         public long hostSumTenths, hostSamples, maxHostTenths;          // max: since beginWindow()
         public long inFlightSum, inFlightSamples, maxInFlight;          // max: since beginWindow()
+        // The PC's rhythm (capture times)
+        public long hostFrames, hostCadenceSumUs, hostCadenceN, pcGaps, pcGapExtraMs, deliveryStalls;
+        public long late4, late8, late16, maxPcGapMs, maxDeliveryStallMs; // max: since beginWindow()
+        // The screen by SurfaceFlinger's timing
+        public long modelPictures, modelRefreshes, modelFrozen, modelFrozenNs, modelFrozenPc, modelFrozenPcNs;
+        public long modelSkipped, modelSkippedNs, modelUneven, modelUnevenNs, modelReplaced, modelScreenSumUs, modelScreenN;
+        public long maxModelScreenUs, modelLongestFreezeNs;              // since beginWindow()
         // Longest values since the previous tick() (timeline)
         public long tickMaxFrameMs, tickMaxArrivalGapMs, tickMaxScreenUs;
+        public long tickMaxPcGapMs, tickMaxLateMs, tickMaxModelScreenUs, tickModelLongestFreezeMs;
     }
 
     public static Sample sample() {
@@ -262,6 +493,32 @@ public final class TvDiagnostics {
         s.inFlightSum = inFlightSum.get();
         s.inFlightSamples = inFlightSamples.get();
         s.maxInFlight = windowMaxInFlight;
+        s.hostFrames = hostFrames.get();
+        s.hostCadenceSumUs = hostCadenceSumUs.get();
+        s.hostCadenceN = hostCadenceN.get();
+        s.pcGaps = pcGaps.get();
+        s.pcGapExtraMs = pcGapExtraMs.get();
+        s.deliveryStalls = deliveryStalls.get();
+        s.late4 = late4.get();
+        s.late8 = late8.get();
+        s.late16 = late16.get();
+        s.maxPcGapMs = windowMaxPcGapMs;
+        s.maxDeliveryStallMs = windowMaxDeliveryStallMs;
+        s.modelPictures = modelPictures.get();
+        s.modelRefreshes = modelRefreshes.get();
+        s.modelFrozen = modelFrozen.get();
+        s.modelFrozenNs = modelFrozenNs.get();
+        s.modelFrozenPc = modelFrozenPc.get();
+        s.modelFrozenPcNs = modelFrozenPcNs.get();
+        s.modelSkipped = modelSkipped.get();
+        s.modelSkippedNs = modelSkippedNs.get();
+        s.modelUneven = modelUneven.get();
+        s.modelUnevenNs = modelUnevenNs.get();
+        s.modelReplaced = modelReplaced.get();
+        s.modelScreenSumUs = modelScreenSumUs.get();
+        s.modelScreenN = modelScreenN.get();
+        s.maxModelScreenUs = windowMaxModelScreenUs;
+        s.modelLongestFreezeNs = windowModelLongestFreezeNs;
         return s;
     }
 
@@ -271,9 +528,17 @@ public final class TvDiagnostics {
         s.tickMaxFrameMs = tickMaxDisplayIntervalNs / 1_000_000L;
         s.tickMaxArrivalGapMs = tickMaxArrivalGapMs;
         s.tickMaxScreenUs = tickMaxScreenUs;
+        s.tickMaxPcGapMs = tickMaxPcGapMs;
+        s.tickMaxLateMs = tickMaxLateMs;
+        s.tickMaxModelScreenUs = tickMaxModelScreenUs;
+        s.tickModelLongestFreezeMs = tickModelLongestFreezeNs / 1_000_000L;
         tickMaxDisplayIntervalNs = 0;
         tickMaxArrivalGapMs = 0;
         tickMaxScreenUs = 0;
+        tickMaxPcGapMs = 0;
+        tickMaxLateMs = 0;
+        tickMaxModelScreenUs = 0;
+        tickModelLongestFreezeNs = 0;
         return s;
     }
 
@@ -284,6 +549,10 @@ public final class TvDiagnostics {
         windowMaxScreenUs = 0;
         windowMaxHostTenths = 0;
         windowMaxInFlight = 0;
+        windowMaxPcGapMs = 0;
+        windowMaxDeliveryStallMs = 0;
+        windowMaxModelScreenUs = 0;
+        windowModelLongestFreezeNs = 0;
     }
 
     // --- Network loss and round trip (session, for the stream report) ---
@@ -387,6 +656,46 @@ public final class TvDiagnostics {
         inFlightSamples.set(0);
         windowMaxInFlight = 0;
         sessionMaxInFlight = 0;
+        lastHostUs = -1;
+        hostChecks = 0;
+        hostMismatches = 0;
+        hostTimesSynthetic = false;
+        pcPeriodEmaNs = 0;
+        hostFrames.set(0);
+        hostCadenceSumUs.set(0);
+        hostCadenceN.set(0);
+        pcGaps.set(0);
+        pcGapExtraMs.set(0);
+        maxPcGapMs = 0;
+        windowMaxPcGapMs = 0;
+        tickMaxPcGapMs = 0;
+        deliveryStalls.set(0);
+        maxDeliveryStallMs = 0;
+        windowMaxDeliveryStallMs = 0;
+        late4.set(0);
+        late8.set(0);
+        late16.set(0);
+        tickMaxLateMs = 0;
+        modelPictures.set(0);
+        modelRefreshes.set(0);
+        modelFrozen.set(0);
+        modelFrozenNs.set(0);
+        modelFrozenPc.set(0);
+        modelFrozenPcNs.set(0);
+        modelSkipped.set(0);
+        modelSkippedNs.set(0);
+        modelUneven.set(0);
+        modelUnevenNs.set(0);
+        modelReplaced.set(0);
+        modelScreenSumUs.set(0);
+        modelScreenN.set(0);
+        modelLongestFreezeNs = 0;
+        windowModelLongestFreezeNs = 0;
+        tickModelLongestFreezeNs = 0;
+        windowMaxModelScreenUs = 0;
+        tickMaxModelScreenUs = 0;
+        renderEcho.set(0);
+        renderChecked.set(0);
         rttSumMs.set(0);
         rttSamples.set(0);
         maxRttMs = 0;
@@ -845,9 +1154,25 @@ public final class TvDiagnostics {
                 .append(" · TV game mode ").append(gameModeState)
                 .append(" · Android ").append(Build.VERSION.RELEASE).append(" (API ").append(Build.VERSION.SDK_INT).append(")\n");
 
-        // What actually reached the screen
+        // What reached the screen, by SurfaceFlinger's timing (see TvScreenModel)
+        {
+            final long mp = modelPictures.get(), mf = modelFrozen.get(), mfp = modelFrozenPc.get();
+            final long mu = modelUneven.get(), ms = modelSkipped.get();
+            final long msSum = modelScreenSumUs.get(), msN = modelScreenN.get();
+            final long pg = pcGaps.get(), ds = deliveryStalls.get();
+            if (haveRates && mp > snapModelPictures) {
+                sb.append(String.format(Locale.US,
+                        "Screen: %.1f new pictures/s · frozen %d (PC had nothing newer %d) · skipped %d · uneven %d · TV %.1f ms · PC gaps %d · late deliveries %d\n",
+                        (mp - snapModelPictures) / secs, mf - snapModelFrozen, mfp - snapModelFrozenPc,
+                        ms - snapModelSkipped, mu - snapModelUneven,
+                        msN > snapModelScreenN ? (msSum - snapModelScreenSum) / 1000.0 / (msN - snapModelScreenN) : 0.0,
+                        pg - snapPcGaps, ds - snapDeliveryStalls));
+            }
+            snapModelPictures = mp; snapModelFrozen = mf; snapModelFrozenPc = mfp; snapModelUneven = mu; snapModelSkipped = ms;
+            snapModelScreenSum = msSum; snapModelScreenN = msN; snapPcGaps = pg; snapDeliveryStalls = ds;
+        }
         if (displayed > 0) {
-            sb.append(String.format(Locale.US, "Shown %.1f fps (sent %.1f) · gaps %.1f/s, longest %d ms\n",
+            sb.append(String.format(Locale.US, "Frame-rendered callbacks %.1f fps (sent %.1f) · gaps %.1f/s, longest %d ms\n",
                     shownFps, releasedFps, gapsPerSec, maxDisplayIntervalNs / 1_000_000L));
         } else {
             sb.append(String.format(Locale.US, "Sent to display %.1f fps (no render callbacks)\n", releasedFps));
@@ -964,22 +1289,47 @@ public final class TvDiagnostics {
                 stream != null ? stream : "?", mins, remSecs, describePacing(prefs),
                 overlayOn ? " · overlay was ON (adds delay)" : ""));
 
-        // What reached the screen
+        // What reached the screen, by SurfaceFlinger's timing (the frame-rendered callback of this
+        // TV's decoders only echoes the requested time, see TvScreenModel)
         final float screenHz = displayRefreshHz(context);
         final boolean fasterThanScreen = prefs != null && screenHz > 1f && prefs.fps > screenHz * 1.1f;
+        final long pictures = modelPictures.get();
+        if (pictures > 0) {
+            sb.append(String.format(Locale.US,
+                    "Screen: %,d new pictures (%.1f/s) · frozen refreshes %d (%d ms in all, longest %d ms; the PC had nothing newer for %d of them) · skipped frames %d · uneven steps %d · frames replaced %,d%s\n",
+                    pictures, pictures / secs, modelFrozen.get(), modelFrozenNs.get() / 1_000_000L,
+                    modelLongestFreezeNs / 1_000_000L, modelFrozenPc.get(), modelSkipped.get(), modelUneven.get(),
+                    modelReplaced.get(),
+                    fasterThanScreen ? String.format(Locale.US, " (normal: the stream is faster than the %.0f Hz screen)", screenHz) : ""));
+        }
         if (displayed > 0) {
             final long pN = presentSamples.get();
             final String onTime = pN > 0
                     ? String.format(Locale.US, " · %.0f%% on time", 100.0 * (pN - presentSlips.get()) / pN)
                     : "";
-            sb.append(String.format(Locale.US, "Screen: %,d of %,d frames shown%s · %d hitches (longest %d ms, picture stood still %d ms in all) · display drops %d%s\n",
+            final long checked = renderChecked.get(), echo = renderEcho.get();
+            final boolean echoes = checked >= 100 && echo * 10 >= checked * 9;
+            sb.append(String.format(Locale.US, "%s %,d of %,d frames%s · %d hitches (longest %d ms, stood still %d ms in all) · display drops %d%s%s\n",
+                    pictures > 0 ? "Frame-rendered callbacks:" : "Screen:",
                     displayed, released, onTime, displayGaps.get(), maxDisplayIntervalNs / 1_000_000L,
                     hitchExtraNs.get() / 1_000_000L,
                     unplannedDrops.get(),
-                    fasterThanScreen ? String.format(Locale.US, " (stream faster than the %.0f Hz screen: it can show %.0f per second)",
+                    checked > 0 ? String.format(Locale.US, " · %,d of %,d report exactly the requested time%s", echo, checked,
+                            echoes ? " (the TV only echoes the request: these say nothing about the screen)" : "") : "",
+                    fasterThanScreen && pictures == 0 ? String.format(Locale.US, " (stream faster than the %.0f Hz screen: it can show %.0f per second)",
                             screenHz, screenHz) : ""));
-        } else {
+        } else if (pictures == 0) {
             sb.append(String.format(Locale.US, "Screen: %,d frames sent to the display\n", released));
+        }
+
+        // The PC's side, from the capture time every frame carries
+        final String pc = describePcRhythm(secs);
+        if (pc != null) {
+            sb.append(pc).append('\n');
+        }
+        final String rates = describeRateMatch();
+        if (rates != null) {
+            sb.append(rates).append('\n');
         }
 
         // Start-up: how long until the picture was smooth (3 calm seconds in a row)
@@ -1017,10 +1367,19 @@ public final class TvDiagnostics {
         // Delay contributions
         final long hostN = hostSamples.get();
         final long scrN = screenSamples.get();
+        final long modelN = modelScreenN.get();
+        final String tv;
+        if (modelN > 0) {
+            tv = String.format(Locale.US, "%.1f ms (arrival to the refresh it is shown on, SurfaceFlinger's timing%s)",
+                    modelScreenSumUs.get() / 1000.0 / modelN,
+                    scrN > 0 ? String.format(Locale.US, "; the frame-rendered callback said %.1f", screenSumUs.get() / 1000.0 / scrN) : "");
+        } else {
+            tv = scrN > 0 ? String.format(Locale.US, "%.1f ms (arrival to screen)", screenSumUs.get() / 1000.0 / scrN) : "?";
+        }
         sb.append(String.format(Locale.US, "Delay: PC %s · TV %s · decode %s · jitter buffer +%.1f ms (max %d ms, late %d, trims %d, replaced %d) · in app %.1f ms (max %d)\n",
                 hostN > 0 ? String.format(Locale.US, "%.1f ms (capture to encoded, max %.1f)",
                         hostSumTenths.get() / 10.0 / hostN, sessionMaxHostTenths / 10.0) : "? (the PC sent no timing)",
-                scrN > 0 ? String.format(Locale.US, "%.1f ms (arrival to screen)", screenSumUs.get() / 1000.0 / scrN) : "?",
+                tv,
                 decodeMs >= 0 ? decodeMs + " ms" : "?", avgLeadMs, maxLeadNs / 1_000_000L,
                 pacerLate.get(), pacerTrims.get(), pacerCapped.get(), inAvg, maxInAppMs));
 
@@ -1092,6 +1451,63 @@ public final class TvDiagnostics {
     }
 
     /**
+     * The PC's side from the capture times: its frame rate, gaps where it captured nothing, and
+     * frames it captured in time that arrived late. Null when the PC sends no capture times.
+     */
+    public static String describePcRhythm(double secs) {
+        final long frames = hostFrames.get();
+        if (hostTimesSynthetic) {
+            return "PC: sends no capture times (PC-side stalls and late deliveries can't be told apart)";
+        }
+        if (frames < 30) {
+            return null;
+        }
+        final long n = hostCadenceN.get();
+        final double pcFps = n > 0 ? 1e6 * n / hostCadenceSumUs.get() : 0;
+        return String.format(Locale.US,
+                "PC: captures %.2f fps (its clock) · %d gaps where it captured nothing 40 ms+ (%.1f/min, longest %d ms) · " +
+                        "%d late deliveries 40 ms+ (captured in time, arrived late: encoder, PC network or Wi-Fi; longest %d ms) · " +
+                        "frames later than the PC's rhythm: %.1f%% by 4 ms+, %.1f%% by 8 ms+, %.1f%% by 16 ms+",
+                pcFps, pcGaps.get(), pcGaps.get() * 60.0 / Math.max(1.0, secs), maxPcGapMs,
+                deliveryStalls.get(), maxDeliveryStallMs,
+                100.0 * late4.get() / frames, 100.0 * late8.get() / frames, 100.0 * late16.get() / frames);
+    }
+
+    /**
+     * Screen refresh against the PC's frame rate, both measured precisely: when they don't match
+     * exactly, the picture slips by one frame now and then (a repeated or a dropped frame, or with
+     * two frames per refresh one uneven step). Null until both are known.
+     */
+    public static String describeRateMatch() {
+        final double hz = measuredRefreshHz;
+        final long n = hostCadenceN.get();
+        if (hz <= 20 || n < 600 || hostTimesSynthetic) {
+            return hz > 20 ? String.format(Locale.US, "Refresh: screen %.3f Hz (measured over %d s)", hz, measuredRefreshSecs) : null;
+        }
+        final double pcFps = 1e6 * n / hostCadenceSumUs.get();
+        final StringBuilder b = new StringBuilder(String.format(Locale.US,
+                "Refresh: screen %.3f Hz (measured over %d s) · PC %.3f fps", hz, measuredRefreshSecs, pcFps));
+        final double ratio = pcFps / hz;
+        final long k = Math.round(ratio);
+        if (k >= 1 && Math.abs(ratio - k) < 0.02) {
+            final double beat = pcFps - k * hz; // frames per second the PC is ahead (+) or behind (-)
+            if (Math.abs(beat) < 0.001) {
+                b.append(" → in step (no slips to expect)");
+            } else {
+                final double every = 1.0 / Math.abs(beat);
+                b.append(String.format(Locale.US, " → about every %.0f s %s (the two rates differ by %.3f; the PC's clock may be off by a few ppm)",
+                        every,
+                        k == 1 ? (beat < 0 ? "the screen shows a frame twice" : "a frame is left out")
+                                : "the frame groups shift by one (one uneven step)",
+                        Math.abs(beat)));
+            }
+        } else if (ratio > 1.05) {
+            b.append(String.format(Locale.US, " → %.2f frames per refresh: frames are shown for unequal times (judder) unless it is a whole number", ratio));
+        }
+        return b.toString();
+    }
+
+    /**
      * Does the decoder behave like it is in low-latency mode? Such a decoder hands every frame
      * back before the next one arrives: its decode time is below one frame interval and no
      * other frame waits inside it. A decoder that keeps frames back (to reorder them, or to
@@ -1139,6 +1555,9 @@ public final class TvDiagnostics {
                         vsyncPresentationGrid ? "present times" : "vsync") : "none")
                 .append(String.format(Locale.US, " · SF lead %.1f ms · learned extra margin %.1f ms",
                         assumedPipelineNs / 1e6, adaptiveMarginNs / 1e6)).append('\n');
+        b.append(String.format(Locale.US, "Screen timing: the display needs a frame %.1f ms before its refresh (presentation deadline), app vsync offset %.1f ms%s\n",
+                displayDeadlineNs / 1e6, displayAppVsyncOffsetNs / 1e6,
+                measuredRefreshHz > 20 ? String.format(Locale.US, " · refresh measured %.3f Hz", measuredRefreshHz) : ""));
         b.append("Thread priorities raised: ").append(boostedThreads < 0 ? "not yet" : String.valueOf(boostedThreads))
                 .append(" · CPU hints (ADPF): ").append(adpfState).append('\n');
         if (!memoryInfo.isEmpty()) {

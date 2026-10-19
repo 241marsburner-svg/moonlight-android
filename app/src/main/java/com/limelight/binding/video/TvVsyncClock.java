@@ -11,7 +11,9 @@ import android.view.Display;
 import com.limelight.LimeLog;
 
 /**
- * The display's refresh grid, for TV smooth pacing.
+ * The display's refresh grid, for TV smooth/TV game pacing and for working out which refresh each
+ * frame is shown on (TvScreenModel, in every pacing mode of the TV build). Also measures the
+ * exact refresh rate over a long time.
  *
  * A Choreographer on its own thread sees every vsync. On Android 13+ each vsync also reports when
  * a buffer queued for it will reach the screen and SurfaceFlinger's deadline for that buffer,
@@ -112,6 +114,9 @@ final class TvVsyncClock {
         private long lastVsyncNs;
         private long period;
         private int framesUntilRateCheck;
+        private long longStartNs;
+        private long longRefreshes;
+        private long lastLongPublish;
 
         Session(Display display) {
             this.display = display;
@@ -214,6 +219,23 @@ final class TvVsyncClock {
                         period += (perRefresh - period) / 16;
                     }
                 }
+                // The exact refresh rate: refreshes counted over a long time (a stream at
+                // 60.000 fps on a 60.012 Hz screen slips a frame every 80 s)
+                if (delta < 1_000_000_000L && longStartNs != 0L) {
+                    longRefreshes += refreshes;
+                } else {
+                    longStartNs = vsyncNs;
+                    longRefreshes = 0;
+                }
+                if (longRefreshes >= 600 && longRefreshes - lastLongPublish >= 60) {
+                    lastLongPublish = longRefreshes;
+                    final double avg = (vsyncNs - longStartNs) / (double) longRefreshes;
+                    TvDiagnostics.setMeasuredRefresh(1e9 / avg, (int) ((vsyncNs - longStartNs) / 1_000_000_000L));
+                }
+            } else if (longStartNs == 0L) {
+                longStartNs = vsyncNs;
+                longRefreshes = 0;
+                lastLongPublish = 0;
             }
 
             // A display mode switch (e.g. 60 -> 120 Hz) shows up here within half a second
@@ -222,6 +244,10 @@ final class TvVsyncClock {
                 final long fromDisplay = periodFromDisplay(display, 0L);
                 if (fromDisplay > 0L && Math.abs(fromDisplay - period) > period / 50) {
                     period = fromDisplay;
+                    // The long measurement starts over at the new rate
+                    longStartNs = vsyncNs;
+                    longRefreshes = 0;
+                    lastLongPublish = 0;
                 }
             }
 

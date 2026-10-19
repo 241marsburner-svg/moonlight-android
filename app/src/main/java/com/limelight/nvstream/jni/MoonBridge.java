@@ -218,15 +218,21 @@ public class MoonBridge {
     //todo 不显示画面
     public static int bridgeDrSubmitDecodeUnit(byte[] decodeUnitData, int decodeUnitLength, int decodeUnitType,
                                                int frameNumber, int frameType, char frameHostProcessingLatency,
-                                               long receiveTimeUs, long enqueueTimeUs) {
+                                               long receiveTimeUs, long enqueueTimeUs, long hostTimeUs) {
         // Artemide TV: both times are microseconds on CLOCK_MONOTONIC (the System.nanoTime() and
-        // SystemClock.uptimeMillis() clock), converted in callbacks.c
+        // SystemClock.uptimeMillis() clock), converted in callbacks.c. hostTimeUs is when the PC
+        // captured the frame, on the PC's clock (microseconds since its first frame).
         if (videoRenderer != null) {
             // Artemide TV diagnostics: was the frame bunched on arrival, and how long was it
-            // in the app before it reached the decoder?
+            // in the app before it reached the decoder? (Once per frame: an IDR frame comes
+            // as several calls, its parameter sets first.)
             final boolean stats = com.limelight.binding.video.TvDiagnostics.isCollecting();
-            if (stats) {
-                com.limelight.binding.video.TvDiagnostics.onVideoFrameArrived(receiveTimeUs / 1000L);
+            if (decodeUnitType == BUFFER_TYPE_PICDATA) {
+                com.limelight.binding.video.TvFrameTimes.onFrameArrived(hostTimeUs);
+                if (stats) {
+                    com.limelight.binding.video.TvDiagnostics.onVideoFrameArrived(receiveTimeUs / 1000L);
+                    com.limelight.binding.video.TvDiagnostics.onHostFrame(receiveTimeUs, enqueueTimeUs, hostTimeUs);
+                }
             }
             final long submitStartNs = stats ? System.nanoTime() : 0L;
             final int ret = videoRenderer.submitDecodeUnit(decodeUnitData, decodeUnitLength,

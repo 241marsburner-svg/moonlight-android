@@ -2274,15 +2274,21 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         startTvVsyncClockIfNeeded();
     }
 
-    // Artemide TV: the refresh grid TV smooth pacing snaps frames to
+    // Artemide TV: the refresh grid the TV pacing modes snap frames to. The TV build runs it in
+    // every pacing mode: the screen model needs it to work out which refresh each frame is shown on.
     private void startTvVsyncClockIfNeeded() {
-        if (prefs == null || !PreferenceConfiguration.isTvPacing(prefs.framePacing)) {
+        if (prefs == null || !(BuildConfig.TV_BUILD || PreferenceConfiguration.isTvPacing(prefs.framePacing))) {
             return;
         }
         try {
             android.view.Display display = null;
             if (activity != null) {
                 display = activity.getWindowManager().getDefaultDisplay();
+            }
+            if (display != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                try {
+                    tvPacer.setDisplayTiming(display.getPresentationDeadlineNanos(), display.getAppVsyncOffsetNanos());
+                } catch (Throwable ignored) { }
             }
             tvPacer.startVsyncClock(display);
         } catch (Throwable t) {
@@ -2492,10 +2498,10 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             startChoreographerThread();
         }
 
-        // Artemide TV: the refresh grid is only needed while TV smooth is active
+        // Artemide TV: the refresh grid is needed by the TV pacing modes (and in the TV build always)
         if (PreferenceConfiguration.isTvPacing(newPacing)) {
             startTvVsyncClockIfNeeded();
-        } else if (PreferenceConfiguration.isTvPacing(oldPacing)) {
+        } else if (PreferenceConfiguration.isTvPacing(oldPacing) && !BuildConfig.TV_BUILD) {
             tvPacer.stopVsyncClock();
         }
 
@@ -3340,6 +3346,8 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             timestampUs = lastTimestampUs + 1;
         }
         lastTimestampUs = timestampUs;
+        // Artemide TV: remember when the PC captured this frame, by its decoder timestamp
+        TvFrameTimes.record(timestampUs);
 
         // Artemide TV latency test (no-op while off): finds the PC's reaction frame by its size
         com.limelight.tv.TvLatencyTest.onFrameReceived(decodeUnitLength, timestampUs);
@@ -3813,14 +3821,19 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             hints.reportWorkNanos(System.nanoTime() - presentationTimeUs * 1000L);
         }
 
+        // Artemide TV: when the PC captured this frame (for TV smooth's grouping and the screen model)
+        final long hostUs = BuildConfig.TV_BUILD ? TvFrameTimes.hostUsFor(presentationTimeUs) : -1L;
+        final long releaseNs = System.nanoTime();
+
         if (PreferenceConfiguration.isTvPacing(prefs.framePacing)) {
             tvPacer.setGameMode(prefs.framePacing == PreferenceConfiguration.FRAME_PACING_TV_GAME);
             tvPacer.setAggressiveTiming(prefs.tvAggressiveTiming);
             // Hand the frame to SurfaceFlinger right away with an evenly spaced presentation
             // time; SurfaceFlinger holds it until then (see TvFramePacer).
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                final long targetNs = tvPacer.scheduleNextFrame(System.nanoTime(), presentationTimeUs);
+                final long targetNs = tvPacer.scheduleNextFrame(releaseNs, presentationTimeUs, hostUs);
                 releaseOutputBufferAtTimeLockedLollipop(videoDecoder, bufferIndex, targetNs);
+                tvPacer.noteRelease(releaseNs, targetNs, presentationTimeUs, hostUs);
             } else {
                 releaseOutputBufferRenderLocked(videoDecoder, bufferIndex, true);
             }
@@ -3829,9 +3842,8 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
         if (prefs.framePacing == PreferenceConfiguration.FRAME_PACING_GPU_RAW) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                final long tsNs = System.nanoTime();
                 releaseOutputBufferAtTimeLockedLollipop(videoDecoder, bufferIndex, 0L);
-
+                tvPacer.noteRelease(releaseNs, 0L, presentationTimeUs, hostUs);
             } else {
                 releaseOutputBufferRenderLocked(videoDecoder, bufferIndex, true);
             }
@@ -3840,13 +3852,14 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             // Never-drop policy (do not hold output buffers)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 releaseOutputBufferAtTimeLockedLollipop(videoDecoder, bufferIndex, 0L);
-
+                tvPacer.noteRelease(releaseNs, 0L, presentationTimeUs, hostUs);
             } else {
                 releaseOutputBufferRenderLocked(videoDecoder, bufferIndex, true);
             }
         } else {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                releaseOutputBufferAtTimeLockedLollipop(videoDecoder, bufferIndex, System.nanoTime());
+                releaseOutputBufferAtTimeLockedLollipop(videoDecoder, bufferIndex, releaseNs);
+                tvPacer.noteRelease(releaseNs, releaseNs, presentationTimeUs, hostUs);
             } else {
                 releaseOutputBufferRenderLocked(videoDecoder, bufferIndex, true);
             }

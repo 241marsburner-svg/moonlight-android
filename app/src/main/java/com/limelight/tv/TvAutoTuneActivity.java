@@ -209,8 +209,9 @@ public class TvAutoTuneActivity extends Activity {
         title.setText("Auto-tune results");
         final StringBuilder s = new StringBuilder();
         if (best != null) {
-            s.append(String.format(Locale.US, "Recommended: %s (total %.0f: picture %.0f, smoothness %.0f, latency %.0f, about %.0f ms PC to TV).",
-                    best.config.describe(), best.total, best.picture, best.smooth, best.latency, best.latencyMs));
+            s.append(String.format(Locale.US, "Recommended: %s%s (total %.0f: picture %.0f, smoothness %.0f, latency %.0f, about %.0f ms PC to TV).",
+                    best.config.describe(), best.runs > 1 ? ", average of 2 runs" : "",
+                    best.total, best.picture, best.smooth, best.latency, best.latencyMs));
         } else {
             s.append("No test finished. Check that the PC is reachable and try again.");
         }

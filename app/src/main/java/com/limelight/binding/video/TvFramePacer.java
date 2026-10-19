@@ -26,6 +26,11 @@ import android.view.Display;
  *  - if every frame for TRIM_WINDOW_NS had at least two spare frames queued ahead of it, one
  *    frame of that buffer is removed. One spare frame is kept: that is what hides Wi-Fi jitter.
  *
+ * More frames than refreshes (e.g. 120 fps on a 60 Hz TV): the frames are grouped into refreshes
+ * by when the PC captured them, so each refresh moves the picture on by the same amount (see
+ * scheduleGrouped); TV smooth keeps a little more spare time than TV game. ("Lowest latency"
+ * pacing hands every frame over at once instead.)
+ *
  * All times use the System.nanoTime() timebase, which is what MediaCodec expects.
  */
 final class TvFramePacer {
@@ -68,6 +73,32 @@ final class TvFramePacer {
 
     private final TvVsyncClock vsyncClock = new TvVsyncClock();
     private final long[] grid = new long[4];
+    // Which refresh each frame reaches, in every pacing mode (see TvScreenModel)
+    private final TvScreenModel screenModel = new TvScreenModel(vsyncClock);
+
+    // More frames than refreshes (120 fps on 60 Hz): frames are grouped into refreshes by when
+    // the PC captured them, so every refresh gets the same number of frames and the picture moves
+    // on evenly; arrival or decode jitter can't move a frame into another refresh.
+    // refresh of a frame = first refresh at or after (capture time + groupOffsetNs)
+    private static final long GROUP_TRIM_WINDOW_NS = 2_000_000_000L;
+    // Spare time the latest frame of a refresh keeps after a trim (TV game, TV smooth)
+    private static final long GROUP_TRIM_SPARE_GAME_NS = 3_000_000L;
+    private static final long GROUP_TRIM_SPARE_SMOOTH_NS = 5_000_000L;
+    private static final long GROUP_REPEAT_LATE_WITHIN_NS = 1_000_000_000L;
+    // After a frame far behind (the backlog of a network stall) the rhythm is not moved for this long
+    private static final long GROUP_STALL_QUIET_NS = 500_000_000L;
+    // After moving the rhythm later, it is not moved earlier again for this long (else it would
+    // swing between the two whenever frames arrive around the deadline)
+    private static final long GROUP_NO_TRIM_AFTER_SHIFT_NS = 10_000_000_000L;
+    private long groupLastShiftNs;
+    private long groupOffsetNs;           // 0 = not anchored
+    private long groupLastHostUs = -1;
+    private long groupLastSlotNs;
+    private long groupWindowStartNs;
+    private long groupWindowMinSlackNs = Long.MAX_VALUE;
+    private boolean groupLateInWindow;
+    private long groupLastLateNs;
+    private long groupLastBigLateNs;
 
     private long framePeriodNs = 16_666_667L;
 
@@ -111,6 +142,19 @@ final class TvFramePacer {
         vsyncClock.stop();
     }
 
+    /** The Display's presentation deadline and app vsync offset, for the screen model. */
+    void setDisplayTiming(long presentationDeadlineNs, long appVsyncOffsetNs) {
+        screenModel.setDisplayTiming(presentationDeadlineNs, appVsyncOffsetNs);
+    }
+
+    /**
+     * Any pacing mode: a frame was handed to the display (for the screen model).
+     * @param desiredNs the presentation time it was given, 0 = as soon as possible
+     */
+    void noteRelease(long nowNs, long desiredNs, long ptsUs, long hostUs) {
+        screenModel.onRelease(nowNs, desiredNs, ptsUs, hostUs);
+    }
+
     synchronized void reset() {
         resetAtNs = System.nanoTime();
         nextIdealNs = 0L;
@@ -123,6 +167,16 @@ final class TvFramePacer {
         for (int i = 0; i < PLAN_RING; i++) {
             planSlotNs[i] = 0L;
         }
+        groupOffsetNs = 0L;
+        groupLastHostUs = -1;
+        groupLastSlotNs = 0L;
+        groupWindowStartNs = 0L;
+        groupWindowMinSlackNs = Long.MAX_VALUE;
+        groupLateInWindow = false;
+        groupLastLateNs = 0L;
+        groupLastBigLateNs = 0L;
+        groupLastShiftNs = 0L;
+        screenModel.reset();
         // adaptiveExtraNs is kept: it describes the device, not the stream position
     }
 
@@ -154,8 +208,9 @@ final class TvFramePacer {
 
     /**
      * Returns the presentation timestamp for the frame that is about to be released.
+     * @param hostUs when the PC captured it (TvFrameTimes), -1 = unknown
      */
-    synchronized long scheduleNextFrame(final long nowNs, final long ptsUs) {
+    synchronized long scheduleNextFrame(final long nowNs, final long ptsUs, final long hostUs) {
         final long frame = framePeriodNs;
         final boolean game = gameMode;
         final boolean haveGrid = vsyncClock.snapshot(nowNs, grid);
@@ -168,9 +223,17 @@ final class TvFramePacer {
         // that says nothing about the network, so don't grow the buffer for it
         final boolean streamFasterThanDisplay = frame < (refresh * 9) / 10;
 
-        if (game && streamFasterThanDisplay) {
-            // TV game with more frames than refreshes: no buffer, every frame goes to the next
-            // refresh it can make and the newest one wins there. A timestamp of "now" lets
+        if (streamFasterThanDisplay && haveGrid && hostUs >= 0) {
+            final long basePipeline = (presentationGrid && grid[2] > 0L)
+                    ? grid[2] : (aggressiveTiming ? refresh / 2 : refresh);
+            return scheduleGrouped(nowNs, hostUs, gridRef, refresh, frame,
+                    basePipeline + adaptiveExtraNs, presentationGrid, game);
+        }
+
+        if (streamFasterThanDisplay) {
+            // More frames than refreshes, but no refresh grid or no capture times from the PC:
+            // no buffer, every frame goes to the next refresh it can make and the newest
+            // one wins there. A timestamp of "now" lets
             // SurfaceFlinger take the frame at its very next wake-up; a planned refresh would rest
             // on a guess of SurfaceFlinger's deadline, which costs up to a refresh when it errs on
             // the safe side. Nothing is planned, so replaced frames are not counted as drops.
@@ -331,10 +394,113 @@ final class TvFramePacer {
     }
 
     /**
+     * More frames than refreshes (e.g. 120 fps on 60 Hz). Frames go to refreshes by
+     * when the PC captured them: refresh = first refresh at or after (capture time + offset). All
+     * frames of one refresh get the same presentation time (mid-way before it) and SurfaceFlinger
+     * shows the newest. Capture times keep the PC's rhythm, so every refresh gets the same number
+     * of frames and the picture moves on by the same amount each refresh. With "show at once" the
+     * moment a frame arrives decides its refresh instead, and frames that arrive close to
+     * SurfaceFlinger's deadline (Wi-Fi jitter) make the picture step unevenly, at times for
+     * seconds on end.
+     *
+     * The offset sets the delay. It moves by one frame at a time (one uneven step each time):
+     * later when frames keep missing their refresh by a little, earlier when every frame for two
+     * seconds had more than a frame to spare. The backlog after a network stall is shown as soon
+     * as possible without moving it. The PC's frame clock and the TV's refresh drift against each
+     * other, so this happens now and then (about once a minute, in a simulation with the PC at
+     * 120.00 fps and the TV at 60.01 Hz), instead of jitter making it flicker several times a
+     * second.
+     */
+    private long scheduleGrouped(long nowNs, long hostUs, long gridRef, long refresh, long frame,
+                                 long pipeline, boolean presentationGrid, boolean game) {
+        final long minPresentNs = nowNs + pipeline + QUEUE_SAFETY_NS;
+        final long earliest = gridCeil(minPresentNs, gridRef, refresh);
+        final long hostNs = hostUs * 1000L;
+        // One frame of the PC's real rhythm (it may send fewer frames than asked for)
+        final long step = Math.max(frame, Math.min(refresh, TvDiagnostics.pcFramePeriodNs()));
+
+        if (groupOffsetNs == 0L || groupLastHostUs < 0 || hostUs <= groupLastHostUs ||
+                hostUs - groupLastHostUs > 1_000_000L) {
+            // (Re)start: this frame takes the earliest refresh it can make
+            groupOffsetNs = minPresentNs - hostNs;
+            groupWindowStartNs = nowNs;
+            groupWindowMinSlackNs = Long.MAX_VALUE;
+            groupLateInWindow = false;
+            groupLastSlotNs = 0L;
+        }
+        groupLastHostUs = hostUs;
+
+        long slot = gridCeil(hostNs + groupOffsetNs, gridRef, refresh);
+        boolean late = false;
+        boolean shifted = false;
+        if (slot < earliest) {
+            late = true;
+            if (earliest - slot > refresh) {
+                // Far behind: the backlog of a network (or PC) stall. Not the rhythm's fault.
+                groupLastBigLateNs = nowNs;
+            } else {
+                groupLateInWindow = true;
+                final boolean repeated = groupLastLateNs != 0L && nowNs - groupLastLateNs < GROUP_REPEAT_LATE_WITHIN_NS;
+                groupLastLateNs = nowNs;
+                if (repeated && (groupLastBigLateNs == 0L || nowNs - groupLastBigLateNs > GROUP_STALL_QUIET_NS)) {
+                    // Frames keep missing their refresh by a little: the rhythm sits too close
+                    // to SurfaceFlinger's deadline. Move it one frame later.
+                    for (int i = 0; i < 4 && gridCeil(hostNs + groupOffsetNs, gridRef, refresh) < earliest; i++) {
+                        groupOffsetNs += step;
+                    }
+                    slot = gridCeil(hostNs + groupOffsetNs, gridRef, refresh);
+                    shifted = true;
+                    groupLastShiftNs = nowNs;
+                }
+            }
+            if (slot < earliest) {
+                // A single late frame, or far behind after a network stall: show it as soon as
+                // possible and keep the rhythm
+                slot = earliest;
+            }
+        }
+        // Never before the frame queued before it (SurfaceFlinger keeps the order anyway)
+        if (slot < groupLastSlotNs) {
+            slot = groupLastSlotNs;
+        }
+
+        // Earlier again when every frame for two seconds had more than a frame to spare
+        boolean trimmed = false;
+        final long slack = slot - minPresentNs;
+        if (!late && slack < groupWindowMinSlackNs) {
+            groupWindowMinSlackNs = slack;
+        }
+        if (shifted) {
+            groupWindowStartNs = nowNs;
+            groupWindowMinSlackNs = Long.MAX_VALUE;
+            groupLateInWindow = false;
+        } else if (nowNs - groupWindowStartNs >= GROUP_TRIM_WINDOW_NS) {
+            final long spare = game ? GROUP_TRIM_SPARE_GAME_NS : GROUP_TRIM_SPARE_SMOOTH_NS;
+            if (!groupLateInWindow && groupWindowMinSlackNs != Long.MAX_VALUE &&
+                    groupWindowMinSlackNs >= step + spare &&
+                    (groupLastShiftNs == 0L || nowNs - groupLastShiftNs >= GROUP_NO_TRIM_AFTER_SHIFT_NS)) {
+                groupOffsetNs -= step;
+                trimmed = true;
+            }
+            groupWindowStartNs = nowNs;
+            groupWindowMinSlackNs = Long.MAX_VALUE;
+            groupLateInWindow = false;
+        }
+        groupLastSlotNs = slot;
+
+        TvDiagnostics.onFrameScheduled(slot - earliest, late, trimmed, false);
+        TvDiagnostics.setVsyncInfo(refresh, presentationGrid, pipeline);
+        TvDiagnostics.setBufferLimitFrames(0);
+        // Mid-way before its refresh: every frame of the refresh gets the same time
+        return slot - refresh / 2;
+    }
+
+    /**
      * MediaCodec frame-rendered callback: compares when a frame was shown with the plan, and
      * notices frames the display dropped although we gave each one its own refresh.
      */
     synchronized void onFrameRendered(long ptsUs, long renderNs) {
+        screenModel.onRendered(ptsUs, renderNs);
         final int newest = (planPos - 1) & PLAN_MASK;
         int found = -1;
         for (int i = 0; i < PLAN_RING; i++) {
