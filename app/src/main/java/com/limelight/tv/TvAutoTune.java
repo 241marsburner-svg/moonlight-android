@@ -218,6 +218,8 @@ public final class TvAutoTune {
         // The PC's rhythm (capture times); hasHost false = the PC sends none
         public boolean hasHost;
         public double pcFps, pcGapsPerMin, deliveryStallsPerMin, late8Pct;
+        // A frame from its first to its last packet (the PC's sending spreads it out), ms
+        public double spreadMs = -1, maxSpreadMs;
         public long longestPcGapMs, longestDeliveryStallMs;
         // Asked for more frames than the screen shows (120 fps), but the PC sent far fewer: the
         // game or the stream test page drew at a lower rate on the PC, so this tested nothing new
@@ -934,6 +936,11 @@ public final class TvAutoTune {
             r.modelTvMs = mN > 0 ? (b.modelScreenSumUs - a.modelScreenSumUs) / (double) mN / 1000.0 : -1;
             r.maxModelTvMs = b.maxModelScreenUs / 1000.0;
         }
+        final long spN = b.spreadN - a.spreadN;
+        if (spN > 0) {
+            r.spreadMs = (b.spreadSumUs - a.spreadSumUs) / 1000.0 / spN;
+            r.maxSpreadMs = b.maxSpreadUs / 1000.0;
+        }
         // The PC's rhythm
         final long hostFrames = b.hostFrames - a.hostFrames;
         r.hasHost = hostFrames > secs * 5 && TvDiagnostics.hostTimesAvailable();
@@ -1042,7 +1049,10 @@ public final class TvAutoTune {
             tvHow = "estimated: decode + buffer + 1 refresh";
         }
         final double host = Math.max(0, r.hostMs);
-        final double net = Math.max(0, r.rttMs) / 2.0;
+        // Network: half the round trip for the first packet, plus the time until the frame's
+        // last packet is in (a PC that paces its sending spreads every frame out)
+        final double spread = Math.max(0, r.spreadMs);
+        final double net = Math.max(0, r.rttMs) / 2.0 + spread;
         // A new picture waits half a frame on average for the next capture, at the rate the PC
         // really sent (a 120 fps stream from a game drawing 60 fps waits like a 60 fps one)
         r.realFps = r.hasHost && r.pcFps > 1 ? Math.min(r.config.fps, r.pcFps)
@@ -1052,11 +1062,11 @@ public final class TvAutoTune {
         r.latencyMs = host + net + tvMs + capture;
         r.latency = clamp(100 - (r.latencyMs - LATENCY_FREE_MS) * LATENCY_POINTS_PER_MS);
         r.latencyWhy = String.format(Locale.US,
-                "%.0f = 100 - %.1f x (%.1f ms - %.0f): PC %s + network %.1f ms [round trip %.0f / 2] + TV %.1f ms [%s; decode %.1f, buffer %.1f, max %.0f] + capture wait %.1f ms [half a frame at the %.0f fps the PC sent]",
+                "%.0f = 100 - %.1f x (%.1f ms - %.0f): PC %s + network %.1f ms [round trip %.0f / 2 + %.1f ms from a frame's first to its last packet] + TV %.1f ms [%s; decode %.1f, buffer %.1f, max %.0f] + capture wait %.1f ms [half a frame at the %.0f fps the PC sent]",
                 r.latency, LATENCY_POINTS_PER_MS, r.latencyMs, LATENCY_FREE_MS,
                 r.hostMs >= 0 ? String.format(Locale.US, "%.1f ms [capture to encoded, max %.1f]", r.hostMs, r.maxHostMs)
                         : "? [the PC sent no timing: counted as 0]",
-                net, r.rttMs, tvMs, tvHow, r.decodeMs, r.leadMs, tvMax, capture, r.realFps);
+                net, r.rttMs, spread, tvMs, tvHow, r.decodeMs, r.leadMs, tvMax, capture, r.realFps);
 
         // Picture: resolution and bits per pixel (0.15 bpp is plenty for HEVC game streaming;
         // AV1 needs about 30 % fewer bits for the same picture, H.264 about 60 % more)
@@ -1620,7 +1630,7 @@ public final class TvAutoTune {
                         " Which refresh shows which frame comes from SurfaceFlinger's timing (the display's presentation deadline and its refresh grid):" +
                         " this TV's frame-rendered callback only echoes the requested time. Without a refresh grid: %.2f per ms/min of hitches the callback saw.\n",
                 FROZEN_POINTS_PER_MS, JUMP_POINTS_PER_MS, UNEVEN_MOTION_POINTS, LOSS_POINTS, PAUSE_POINTS, UNEVEN_MOTION_POINTS, HITCH_POINTS_PER_STALL_MS));
-        b.append(String.format(Locale.US, " Latency    = 100 - %.1f x (ms - %.0f), ms = PC (capture to encoded) + round trip/2 + TV (arrival to the refresh it is shown on) + half a frame interval\n",
+        b.append(String.format(Locale.US, " Latency    = 100 - %.1f x (ms - %.0f), ms = PC (capture to encoded) + round trip/2 + a frame's first to last packet + TV (arrival to the refresh it is shown on) + half a frame interval\n",
                 LATENCY_POINTS_PER_MS, LATENCY_FREE_MS));
         b.append(" Picture    = resolution (4K 100, 1440p 85, 1080p 70) x (0.6 + 0.4 x bits-per-pixel/0.15, capped; AV1 x1.3)\n");
         b.append(" Total      = 40% smoothness + 35% latency + 25% picture; tests below 70 smoothness rank last\n");
@@ -1636,12 +1646,12 @@ public final class TvAutoTune {
                 "frozen refreshes/min;frozen ms/min;longest still ms;PC had nothing newer/min;skipped frames/min;uneven steps/min;frames replaced/s;" +
                 "PC fps (capture times);PC gaps/min;longest PC gap ms;late deliveries/min;longest late delivery ms;frames 8 ms+ behind %;" +
                 "net pauses/min;longest pause ms;loss events/min;frames lost/min;keyframe requests;PC ms;decode ms;frames in decoder;" +
-                "TV ms (to the refresh shown on);max TV ms;callback TV ms;round trip ms;buffer ms;Mbps used;audio FEC %;codec used;decoder;note\n");
+                "TV ms (to the refresh shown on);max TV ms;callback TV ms;round trip ms;frame first to last packet ms;max ms;buffer ms;Mbps used;audio FEC %;codec used;decoder;note\n");
         int n = 1;
         for (Result r : results) {
             b.append(String.format(Locale.US,
                     "%d;%d;%s;%s;%s;%.0f;%.0f;%.0f;%.1f;%.0f;%s;%.0f;%.1f;%.0f;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;" +
-                            "%.1f;%d;%.1f;%.1f;%d;%.1f;%.1f;%.2f;%s;%s;%.1f;%.0f;%.1f;%.1f;%.2f;%s;%s;%s\n",
+                            "%.1f;%d;%.1f;%.1f;%d;%.1f;%.1f;%.2f;%s;%s;%.1f;%.0f;%s;%s;%.1f;%.1f;%.2f;%s;%s;%s\n",
                     n++, r.config.stage, r.config.describe(), r.ok ? "yes" : "no",
                     r.settleSecs < 0 ? "" : (r.settled ? String.format(Locale.US, "%.0f", r.settleSecs)
                             : String.format(Locale.US, "not within %.0f", r.settleSecs)),
@@ -1656,7 +1666,8 @@ public final class TvAutoTune {
                     r.netPausesPerMin, r.longestNetPauseMs, r.lossEventsPerMin, r.framesLostPerMin, r.keyframes,
                     r.hostMs, r.decodeMs, r.framesInDecoder,
                     r.modelTvMs > 0 ? f1(r.modelTvMs) : "", r.modelTvMs > 0 ? f1(r.maxModelTvMs) : "",
-                    r.screenMs, r.rttMs, r.leadMs, r.mbpsUsed, r.audioFecPct, r.codecUsed, r.decoder,
+                    r.screenMs, r.rttMs, r.spreadMs >= 0 ? f1(r.spreadMs) : "", r.spreadMs >= 0 ? f1(r.maxSpreadMs) : "",
+                    r.leadMs, r.mbpsUsed, r.audioFecPct, r.codecUsed, r.decoder,
                     !r.ok ? r.failure : (r.staticPicture ? "static picture: compare with care" : "")));
         }
         b.append("\nPER TEST: STREAM REPORT, SETTINGS IN USE AND TIMELINE (one line per second)\n");

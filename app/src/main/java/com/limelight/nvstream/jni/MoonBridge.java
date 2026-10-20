@@ -232,6 +232,7 @@ public class MoonBridge {
                 if (stats) {
                     com.limelight.binding.video.TvDiagnostics.onVideoFrameArrived(receiveTimeUs / 1000L);
                     com.limelight.binding.video.TvDiagnostics.onHostFrame(receiveTimeUs, enqueueTimeUs, hostTimeUs);
+                    com.limelight.binding.video.TvDiagnostics.onFrameSpread(enqueueTimeUs - receiveTimeUs);
                 }
             }
             final long submitStartNs = stats ? System.nanoTime() : 0L;

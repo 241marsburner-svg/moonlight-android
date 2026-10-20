@@ -282,6 +282,27 @@ public final class TvDiagnostics {
         }
     }
 
+    // How long a frame takes to arrive: first packet to complete (a PC that paces its sending
+    // spreads every frame over several ms; the TV can only decode it once the last packet is in)
+    private static final AtomicLong spreadSumUs = new AtomicLong();
+    private static final AtomicLong spreadN = new AtomicLong();
+    private static volatile long maxSpreadUs, windowMaxSpreadUs;
+
+    /** Receive thread, once per frame: first packet to complete, µs. */
+    public static void onFrameSpread(long us) {
+        if (!collecting || us < 0 || us > 1_000_000L) {
+            return;
+        }
+        spreadSumUs.addAndGet(us);
+        spreadN.incrementAndGet();
+        if (us > maxSpreadUs) {
+            maxSpreadUs = us;
+        }
+        if (us > windowMaxSpreadUs) {
+            windowMaxSpreadUs = us;
+        }
+    }
+
     /** The PC's frame interval (its clock; the stream's frame interval until it is known). */
     public static long pcFramePeriodNs() {
         final long p = pcPeriodEmaNs;
@@ -470,6 +491,7 @@ public final class TvDiagnostics {
         public long modelPictures, modelRefreshes, modelFrozen, modelFrozenNs, modelFrozenPc, modelFrozenPcNs;
         public long modelSkipped, modelSkippedNs, modelUneven, modelUnevenNs, modelReplaced, modelScreenSumUs, modelScreenN;
         public long maxModelScreenUs, modelLongestFreezeNs;              // since beginWindow()
+        public long spreadSumUs, spreadN, maxSpreadUs;                    // max: since beginWindow()
         // Longest values since the previous tick() (timeline)
         public long tickMaxFrameMs, tickMaxArrivalGapMs, tickMaxScreenUs;
         public long tickMaxPcGapMs, tickMaxLateMs, tickMaxModelScreenUs, tickModelLongestFreezeMs;
@@ -536,6 +558,9 @@ public final class TvDiagnostics {
         s.modelScreenN = modelScreenN.get();
         s.maxModelScreenUs = windowMaxModelScreenUs;
         s.modelLongestFreezeNs = windowModelLongestFreezeNs;
+        s.spreadSumUs = spreadSumUs.get();
+        s.spreadN = spreadN.get();
+        s.maxSpreadUs = windowMaxSpreadUs;
         return s;
     }
 
@@ -570,6 +595,7 @@ public final class TvDiagnostics {
         windowMaxDeliveryStallMs = 0;
         windowMaxModelScreenUs = 0;
         windowModelLongestFreezeNs = 0;
+        windowMaxSpreadUs = 0;
     }
 
     // --- Network loss and round trip (session, for the stream report) ---
@@ -715,6 +741,10 @@ public final class TvDiagnostics {
         tickMaxModelScreenUs = 0;
         renderEcho.set(0);
         renderChecked.set(0);
+        spreadSumUs.set(0);
+        spreadN.set(0);
+        maxSpreadUs = 0;
+        windowMaxSpreadUs = 0;
         rttSumMs.set(0);
         rttSamples.set(0);
         maxRttMs = 0;
@@ -1360,10 +1390,13 @@ public final class TvDiagnostics {
         }
 
         // Network arrival
-        sb.append(String.format(Locale.US, "Network: %d pauses (%.1f/min, longest %d ms%s) · %.0f%% of frames bunched · audio pauses %d (longest %d ms)\n",
+        final long spN = spreadN.get();
+        sb.append(String.format(Locale.US, "Network: %d pauses (%.1f/min, longest %d ms%s) · %.0f%% of frames bunched · audio pauses %d (longest %d ms)%s\n",
                 netGaps, netGaps * 60.0 / secs, maxVideoNetGapMs,
                 gapPeriodEmaMs > 0 ? String.format(Locale.US, ", about every %d ms", gapPeriodEmaMs) : "",
-                bunchedPct, audioArrivalGaps.get(), maxAudioArrivalGapMs));
+                bunchedPct, audioArrivalGaps.get(), maxAudioArrivalGapMs,
+                spN > 0 ? String.format(Locale.US, " · a frame takes %.1f ms from its first to its last packet (longest %.0f ms)",
+                        spreadSumUs.get() / 1000.0 / spN, maxSpreadUs / 1000.0) : ""));
 
         // Loss and round trip: lost frames are what FEC could not repair; rebuilt audio packets
         // (5 ms each, small) show how lossy the link is even when nothing visible happened

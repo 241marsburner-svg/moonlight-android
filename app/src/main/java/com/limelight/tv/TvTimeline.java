@@ -37,7 +37,7 @@ public final class TvTimeline {
     public static final String HEADER =
             "t s;screen Hz;new pictures/s;frozen refreshes;frozen: PC had nothing newer;skipped frames;uneven steps;" +
             "longest still ms;frames replaced;sent fps;arrived fps;PC fps;longest PC gap ms;longest arrival gap ms;" +
-            "latest vs PC rhythm ms;net pauses;frames lost;Mbps;decode ms;TV ms;max TV ms;buffer ms;keyframe req;" +
+            "latest vs PC rhythm ms;frame arrival spread ms;net pauses;frames lost;Mbps;decode ms;TV ms;max TV ms;buffer ms;keyframe req;" +
             "audio gaps;round trip ms;PC ms;frames in decoder;note";
     private static final int COLUMNS = HEADER.split(";").length;
 
@@ -117,7 +117,7 @@ public final class TvTimeline {
         final String maxTvMs = modelScrN > 0 ? fmt1(s.tickMaxModelScreenUs / 1000.0)
                 : scrN > 0 ? fmt1(s.tickMaxScreenUs / 1000.0) : "";
         add(String.format(Locale.US,
-                "%.0f;%.0f;%s;%s;%s;%s;%s;%s;%s;%.1f;%.1f;%s;%s;%d;%s;%d;%d;%.1f;%s;%s;%s;%s;%d;%d;%s;%s;%s;%s",
+                "%.0f;%.0f;%s;%s;%s;%s;%s;%s;%s;%.1f;%.1f;%s;%s;%d;%s;%s;%d;%d;%.1f;%s;%s;%s;%s;%d;%d;%s;%s;%s;%s",
                 secondsSinceStart(), hz,
                 model ? fmt1(pictures) : "",
                 model ? String.valueOf(s.modelFrozen - p.modelFrozen) : "",
@@ -132,6 +132,7 @@ public final class TvTimeline {
                 s.hostFrames > p.hostFrames ? String.valueOf(s.tickMaxPcGapMs) : "",
                 s.tickMaxArrivalGapMs,
                 s.hostFrames > p.hostFrames ? String.valueOf(s.tickMaxLateMs) : "",
+                s.spreadN > p.spreadN ? fmt1((s.spreadSumUs - p.spreadSumUs) / 1000.0 / (s.spreadN - p.spreadN)) : "",
                 s.netGaps - p.netGaps,
                 s.framesLost - p.framesLost,
                 (s.bytes - p.bytes) * 8.0 / secs / 1e6,
