@@ -372,6 +372,8 @@ public final class PerfOverlayComposer {
             glyph.append('T');
         } else if (p.framePacing == PreferenceConfiguration.FRAME_PACING_TV_GAME) {
             glyph.append('G');
+        } else if (p.framePacing == PreferenceConfiguration.FRAME_PACING_TV_DIRECT) {
+            glyph.append('D');
         } else {
             glyph.append('?');
         }

@@ -129,6 +129,7 @@
         <item>@string/pacing_gpu_raw</item>
         <item>@string/pacing_tv_smooth</item>
         <item>@string/pacing_tv_game</item>
+        <item>@string/pacing_tv_direct</item>
     </string-array>
     <string-array name="video_frame_pacing_values" translatable="false">
         <item>warp2</item>
@@ -140,6 +141,7 @@
         <item>gpu-raw</item>
         <item>tv</item>
         <item>tvgame</item>
+        <item>tvdirect</item>
     </string-array>
 
     <string-array name="audio_buffer_mode_names">
@@ -148,6 +150,7 @@
         <item>@string/audio_buffer_large</item>
         <item>@string/audio_buffer_low_lag</item>
         <item>@string/audio_buffer_off</item>
+        <item>@string/audio_buffer_native_aaudio</item>
     </string-array>
     <string-array name="audio_buffer_mode_values" translatable="false">
         <item>lowlatency</item>
@@ -155,6 +158,7 @@
         <item>large</item>
         <item>lowlag</item>
         <item>off</item>
+        <item>aaudio</item>
     </string-array>
 
     <string-array name="analog_scrolling_names">

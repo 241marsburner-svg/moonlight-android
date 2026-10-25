@@ -56,6 +56,8 @@ public class PreferenceConfiguration {
     public static final String AUDIO_BUFFER_LOW_LAG = "lowlag";
     // No audio on the TV at all: the PC keeps playing its own sound (e.g. to a headset there)
     public static final String AUDIO_BUFFER_OFF = "off";
+    // Native AAudio output (from pabragin/moonlight-tcl); falls back to AudioTrack low latency
+    public static final String AUDIO_BUFFER_NATIVE_AAUDIO = "aaudio";
 
     public boolean isTvAudioOff() {
         return AUDIO_BUFFER_OFF.equals(audioBufferMode);
@@ -371,6 +373,10 @@ public class PreferenceConfiguration {
     // TV game: the same refresh-grid pacing with at most one frame of buffer, for the lowest
     // input delay that is still free of Wi-Fi bunching drops.
     public static final int FRAME_PACING_TV_GAME = 8;
+    // TV direct (from pabragin/moonlight-tcl): every decoded frame is handed to the display straight
+    // from the decoder's own callback, with no renderer thread or pacing in between; SurfaceFlinger
+    // shows the newest due frame. Needs async decoding (otherwise it behaves like Lowest latency).
+    public static final int FRAME_PACING_TV_DIRECT = 9;
 
     public static boolean isTvPacing(int mode) {
         return mode == FRAME_PACING_TV_SMOOTH || mode == FRAME_PACING_TV_GAME;
@@ -381,6 +387,7 @@ public class PreferenceConfiguration {
         switch (mode) {
             case FRAME_PACING_TV_SMOOTH: return "TV smooth";
             case FRAME_PACING_TV_GAME: return "TV game";
+            case FRAME_PACING_TV_DIRECT: return "TV direct";
             case FRAME_PACING_BALANCED: return "Balanced";
             case FRAME_PACING_MIN_LATENCY: return "Lowest latency";
             case FRAME_PACING_MAX_SMOOTHNESS: return "Smoothest";
@@ -889,6 +896,8 @@ public class PreferenceConfiguration {
             return FRAME_PACING_TV_SMOOTH;
         } else if ("tvgame".equals(str)) {
             return FRAME_PACING_TV_GAME;
+        } else if ("tvdirect".equals(str)) {
+            return FRAME_PACING_TV_DIRECT;
         } else {
             return FRAME_PACING_MIN_LATENCY;
         }

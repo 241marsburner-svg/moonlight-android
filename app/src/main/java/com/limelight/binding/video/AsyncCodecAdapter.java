@@ -24,6 +24,15 @@ public final class AsyncCodecAdapter {
         void releaseNoRender(MediaCodec codec, int index);
     }
 
+    /**
+     * Optional "TV direct" path (from pabragin/moonlight-tcl): the decoded frame is released to the
+     * display right here on the codec callback thread, with no renderer thread in between.
+     * Returns true when it took care of the buffer; false hands it to the normal queue instead.
+     */
+    public interface DirectRender {
+        boolean render(MediaCodec codec, int index, MediaCodec.BufferInfo info, long readyNs);
+    }
+
     public interface Callbacks {
         void onOutputFormatChanged(MediaCodec codec, MediaFormat format);
         void onCodecError(MediaCodec codec, MediaCodec.CodecException e);
@@ -62,6 +71,13 @@ public final class AsyncCodecAdapter {
 
     // Callback thread drop-policy knob (volatile for cross-thread visibility).
     private volatile boolean preferLowerDelays = false;
+
+    // TV direct hook (null = always queue for the renderer thread)
+    private volatile DirectRender directRender;
+
+    public void setDirectRender(DirectRender render) {
+        directRender = render;
+    }
 
     private HandlerThread callbackThread;
     private volatile boolean callbackInstalled = false;
@@ -306,6 +322,17 @@ public final class AsyncCodecAdapter {
 
                 @Override
                 public void onOutputBufferAvailable(MediaCodec mc, int index, MediaCodec.BufferInfo info) {
+                    final DirectRender direct = directRender;
+                    if (direct != null) {
+                        try {
+                            if (direct.render(mc, index, info, System.nanoTime())) {
+                                return;
+                            }
+                        } catch (Throwable ignored) {
+                            // Fall through to the normal queue so the buffer is never leaked
+                        }
+                    }
+
                     final MediaCodec.BufferInfo copy = obtainInfo();
                     copy.set(info.offset, info.size, info.presentationTimeUs, info.flags);
 

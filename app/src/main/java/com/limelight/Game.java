@@ -1036,6 +1036,9 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 glPrefs.glRenderer,
                 this);
 
+        // HDR streams start the decoder with this host's remembered HDR metadata (no restart when it matches)
+        decoderRenderer.setHdrMetadataCacheKey(getIntent().getStringExtra(EXTRA_PC_UUID));
+
         // Only GlUpscale (FSR or FastGL) needs a display/view-sized producer Surface.
         // The normal MediaCodec direct path must keep its original Surface sizing behavior.
         installGlUpscaleSizerIfNeeded();
@@ -1244,8 +1247,11 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 // Starten Sie die NvConnection
                 // NB: this used to pass playHostAudio as the "enable audio effects" flag, which made
                 // "Play audio on PC" switch the audio path and "system equalizer support" do nothing.
-                conn.start(new AndroidAudioRenderer(Game.this, prefConfig.enableAudioFx, prefConfig.audioBufferMode),
-                        decoderRenderer, Game.this);
+                final com.limelight.nvstream.av.audio.AudioRenderer audioRenderer =
+                        PreferenceConfiguration.AUDIO_BUFFER_NATIVE_AAUDIO.equals(prefConfig.audioBufferMode)
+                                ? new com.limelight.binding.audio.NativeAudioRenderer(Game.this, prefConfig.enableAudioFx)
+                                : new AndroidAudioRenderer(Game.this, prefConfig.enableAudioFx, prefConfig.audioBufferMode);
+                conn.start(audioRenderer, decoderRenderer, Game.this);
             }
         });
 
@@ -1809,6 +1815,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 prefConfig.framePacing == PreferenceConfiguration.FRAME_PACING_MIN_LATENCY ||
                 prefConfig.framePacing == PreferenceConfiguration.FRAME_PACING_BALANCED ||
                 PreferenceConfiguration.isTvPacing(prefConfig.framePacing) ||
+                prefConfig.framePacing == PreferenceConfiguration.FRAME_PACING_TV_DIRECT ||
                 prefConfig.reduceRefreshRate ;
     }
 

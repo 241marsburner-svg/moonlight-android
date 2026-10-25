@@ -478,6 +478,10 @@ public final class TvAutoTune {
             plan.add(f.with("lowest latency: every frame shown at once, no pacing", STAGE_OPTIONS,
                     PreferenceConfiguration.FRAME_PACING_MIN_LATENCY, false, false, false));
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            plan.add(f.with("TV direct: every frame goes to the screen straight from the decoder (moonlight-tcl)",
+                    STAGE_OPTIONS, PreferenceConfiguration.FRAME_PACING_TV_DIRECT, false, false, false));
+        }
         if (formatWinner.decoder != null && formatWinner.decoder.toLowerCase(Locale.US).contains("mtk")) {
             plan.add(f.with("MediaTek extra decoder keys (vendor speed keys, operating rate, ultra low latency)",
                     STAGE_OPTIONS, game, false, true, false));
@@ -1252,7 +1256,9 @@ public final class TvAutoTune {
         final Result keys = findOption(true, false);
         final Result sync = findOption(false, true);
         final boolean useKeys = helps(keys);
-        final boolean useSync = helps(sync);
+        // TV direct releases frames from the async decoder callback, so it cannot be combined with sync decoding
+        final boolean useSync = helps(sync) &&
+                !(pacing != null && pacing.config.pacing == PreferenceConfiguration.FRAME_PACING_TV_DIRECT);
 
         final Config base = optionsBase.config;
         final int pacingMode = pacing != null ? pacing.config.pacing : base.pacing;
@@ -1352,6 +1358,7 @@ public final class TvAutoTune {
         switch (mode) {
             case PreferenceConfiguration.FRAME_PACING_TV_SMOOTH: return "tv";
             case PreferenceConfiguration.FRAME_PACING_TV_GAME: return "tvgame";
+            case PreferenceConfiguration.FRAME_PACING_TV_DIRECT: return "tvdirect";
             case PreferenceConfiguration.FRAME_PACING_BALANCED: return "balanced";
             case PreferenceConfiguration.FRAME_PACING_CAP_FPS: return "cap-fps";
             case PreferenceConfiguration.FRAME_PACING_MAX_SMOOTHNESS: return "smoothness";

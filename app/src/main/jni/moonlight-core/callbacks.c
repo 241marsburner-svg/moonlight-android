@@ -9,11 +9,16 @@
 
 #include <opus_multistream.h>
 #include <android/log.h>
+#include <stdlib.h>
+
+#include "aaudio_renderer.h"
 
 #include <cpu-features.h>
 
 static OpusMSDecoder* Decoder;
 static OPUS_MULTISTREAM_CONFIGURATION OpusConfig;
+// Scratch for the native AAudio path (no JNI on the audio hot path), from moonlight-tcl
+static int16_t* NativeAudioScratch;
 
 static JavaVM *JVM;
 static pthread_key_t JniEnvKey;
@@ -245,6 +250,7 @@ int BridgeArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusCon
 
         // We know ahead of time what the buffer size will be for decoded audio, so pre-allocate it
         DecodedAudioBuffer = (*env)->NewGlobalRef(env, (*env)->NewShortArray(env, opusConfig->channelCount * opusConfig->samplesPerFrame));
+        NativeAudioScratch = (int16_t*)malloc(sizeof(int16_t) * opusConfig->channelCount * opusConfig->samplesPerFrame);
     }
 
     return err;
@@ -269,10 +275,32 @@ void BridgeArCleanup() {
 
     (*env)->DeleteGlobalRef(env, DecodedAudioBuffer);
 
+    free(NativeAudioScratch);
+    NativeAudioScratch = NULL;
+
     (*env)->CallStaticVoidMethod(env, GlobalBridgeClass, BridgeArCleanupMethod);
 }
 
 void BridgeArDecodeAndPlaySample(char* sampleData, int sampleLength) {
+    if (AAudioRenderer_IsActive() && NativeAudioScratch != NULL) {
+        // Native AAudio path: decode straight into the ring, never touch Java here
+        int nativeLen = opus_multistream_decode(Decoder,
+                                                (const unsigned char*)sampleData,
+                                                sampleLength,
+                                                NativeAudioScratch,
+                                                OpusConfig.samplesPerFrame,
+                                                0);
+        if (nativeLen > 0) {
+            // Same kind of latency bound as the AudioTrack path: drop when too much is queued
+            if (LiGetPendingAudioDuration() < AAudioRenderer_GetMaxPendingMs()) {
+                AAudioRenderer_Write(NativeAudioScratch, nativeLen);
+            } else {
+                AAudioRenderer_CountDroppedPacket();
+            }
+        }
+        return;
+    }
+
     JNIEnv* env = GetThreadEnv();
 
     jshort* decodedData = (*env)->GetPrimitiveArrayCritical(env, DecodedAudioBuffer, NULL);

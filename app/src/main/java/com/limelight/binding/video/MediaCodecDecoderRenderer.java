@@ -149,7 +149,8 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
     private boolean computeAsyncPreferLowerDelaysFromCurrentPrefs(int effectivePacing) {
         // TV smooth must see every decoded frame; "latest only" would throw bunched frames away.
-        if (PreferenceConfiguration.isTvPacing(effectivePacing)) {
+        if (PreferenceConfiguration.isTvPacing(effectivePacing) ||
+                effectivePacing == PreferenceConfiguration.FRAME_PACING_TV_DIRECT) {
             return false;
         }
 
@@ -1285,8 +1286,78 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             this.refreshRateHz = 60f;
         }
         initAsyncDecodingFromSettings();
+
+        // HDR metadata cache (from pabragin/moonlight-tcl): HDR static metadata can only be handed to
+        // MediaCodec at configure time, but the host sends it a few hundred milliseconds into the
+        // stream, which cost a decoder restart (a visible hitch) on every HDR stream. It describes the
+        // host's display and rarely changes, so the decoder starts with the values seen last time;
+        // when the host confirms them, no restart is needed.
+        if ((format & MoonBridge.VIDEO_FORMAT_MASK_10BIT) != 0 && coldCfg.currentHdrMetadata == null) {
+            coldCfg.currentHdrMetadata = loadCachedHdrMetadata();
+            if (coldCfg.currentHdrMetadata != null) {
+                LimeLog.info("HDR metadata: starting the decoder with the values remembered for this host");
+            }
+        }
         return initializeDecoder(false);
     }
+
+    // ==== HDR metadata cache (from pabragin/moonlight-tcl) ====
+    private static final String HDR_METADATA_CACHE_PREFS = "hdr_metadata_cache";
+    // Host UUID under which that host's HDR metadata is remembered; null = no cache
+    private volatile String hdrMetadataCacheKey;
+
+    /** Remember and reuse the HDR metadata of this host (its UUID); null disables the cache. */
+    public void setHdrMetadataCacheKey(String hostUuid) {
+        hdrMetadataCacheKey = (hostUuid == null || hostUuid.isEmpty()) ? null : hostUuid;
+    }
+
+    private byte[] loadCachedHdrMetadata() {
+        final String key = hdrMetadataCacheKey;
+        if (key == null || context == null) {
+            return null;
+        }
+        try {
+            final String hex = context.getSharedPreferences(HDR_METADATA_CACHE_PREFS, Context.MODE_PRIVATE)
+                    .getString(key, null);
+            return hex != null ? hexToBytes(hex) : null;
+        } catch (Exception e) {
+            LimeLog.warning("HDR metadata cache read failed: " + e);
+            return null;
+        }
+    }
+
+    private void storeCachedHdrMetadata(byte[] metadata) {
+        final String key = hdrMetadataCacheKey;
+        if (key == null || metadata == null || context == null) {
+            return;
+        }
+        try {
+            context.getSharedPreferences(HDR_METADATA_CACHE_PREFS, Context.MODE_PRIVATE)
+                    .edit().putString(key, bytesToHex(metadata)).apply();
+        } catch (Exception e) {
+            LimeLog.warning("HDR metadata cache write failed: " + e);
+        }
+    }
+
+    static String bytesToHex(byte[] data) {
+        final StringBuilder sb = new StringBuilder(data.length * 2);
+        for (byte b : data) {
+            sb.append(Character.forDigit((b >> 4) & 0xF, 16)).append(Character.forDigit(b & 0xF, 16));
+        }
+        return sb.toString();
+    }
+
+    static byte[] hexToBytes(String hex) {
+        if (hex.length() % 2 != 0) {
+            throw new IllegalArgumentException("odd hex length");
+        }
+        final byte[] out = new byte[hex.length() / 2];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = (byte) Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+        }
+        return out;
+    }
+    // ==== End HDR metadata cache ====
 
     private float queryDisplayRefreshRateHz() {
         try {
@@ -2395,6 +2466,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         if ("warp2".equals(v)) return PreferenceConfiguration.FRAME_PACING_WARP2;
         if ("tv".equals(v)) return PreferenceConfiguration.FRAME_PACING_TV_SMOOTH;
         if ("tvgame".equals(v)) return PreferenceConfiguration.FRAME_PACING_TV_GAME;
+        if ("tvdirect".equals(v)) return PreferenceConfiguration.FRAME_PACING_TV_DIRECT;
 
         return PreferenceConfiguration.FRAME_PACING_MIN_LATENCY;
     }
@@ -2779,9 +2851,13 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             }
             else if (enabled && hdrMetadata != null && !Arrays.equals(coldCfg.currentHdrMetadata, hdrMetadata)) {
                 coldCfg.currentHdrMetadata = hdrMetadata;
+                storeCachedHdrMetadata(hdrMetadata);
             }
             else {
                 // Nothing to do
+                if (enabled && hdrMetadata != null) {
+                    LimeLog.info("HDR metadata: unchanged, the decoder keeps running");
+                }
                 return;
             }
 
@@ -3719,6 +3795,49 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         }
     };
 
+    // ==== TV direct (from pabragin/moonlight-tcl) ====
+    // moonlight-tcl measured on a TCL C8K (same Pentonic 700 platform as the C7K) that handing each
+    // decoded frame to the display straight from MediaCodec's callback puts all 60 frames on screen far
+    // more often than a renderer thread in between: no thread hop, no wait for a pacing deadline.
+    // The frame is released for "now"; SurfaceFlinger shows the newest due frame.
+    private int tvDirectReleaseErrors;
+    private final AsyncCodecAdapter.DirectRender tvDirectRender = new AsyncCodecAdapter.DirectRender() {
+        @Override
+        public boolean render(MediaCodec codec, int index, MediaCodec.BufferInfo info, long readyNs) {
+            final PreferenceConfiguration p = prefs;
+            if (p == null || p.framePacing != PreferenceConfiguration.FRAME_PACING_TV_DIRECT) {
+                return false;
+            }
+            // During recovery or for a codec state that is gone, the renderer thread's queue handles it
+            if (stopping || codec == null || codec != videoDecoder ||
+                    codecRecoveryType.get() != CR_RECOVERY_TYPE_NONE) {
+                return false;
+            }
+
+            final long presentationTimeUs = info.presentationTimeUs;
+            numFramesOut++;
+            tvFramesOut++;
+            TvDiagnostics.onDecoderInFlight(tvFramesQueued - tvFramesOut);
+            try {
+                decodeLatencyTracker.onDequeue(activeWindowVideoStats, presentationTimeUs, readyNs, USE_FRAME_RENDER_TIME);
+            } catch (Throwable ignored) { }
+
+            try {
+                releaseBufferAccordingToMode(index, presentationTimeUs);
+                activeWindowVideoStats.totalFramesRendered++;
+            } catch (IllegalStateException e) {
+                // Real codec errors also arrive through onError(); a failed release here belongs to a
+                // codec state that just changed, so it is only logged
+                if (tvDirectReleaseErrors < 5) {
+                    tvDirectReleaseErrors++;
+                    LimeLog.warning("TV direct: frame release failed: " + e);
+                }
+            }
+            return true;
+        }
+    };
+    // ==== End TV direct ====
+
     // Keep async callback drop-policy in sync with pacing + its own setting.
     private void updateAsyncPreferLowerDelaysFromCurrentPrefs(int effectivePacing) {
         asyncCodec.setPreferLowerDelays(computeAsyncPreferLowerDelaysFromCurrentPrefs(effectivePacing));
@@ -3761,6 +3880,9 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         if (!useAsyncCodec || videoDecoder == null) return;
 
         updateAsyncPreferLowerDelaysFromCurrentPrefs(getEffectivePacingForThreadPriorities());
+
+        // TV direct: frames are released from the codec callback (the hook checks the pacing per frame)
+        asyncCodec.setDirectRender(tvDirectRender);
 
         asyncCodec.attachIfNeeded(
                 videoDecoder,
@@ -4073,6 +4195,11 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             case PreferenceConfiguration.FRAME_PACING_TV_GAME:
                 return Process.THREAD_PRIORITY_URGENT_DISPLAY;
 
+            case PreferenceConfiguration.FRAME_PACING_TV_DIRECT:
+                // Only frames around a decoder recovery pass through the renderer thread then;
+                // without async decoding it is the release thread (like Lowest latency)
+                return useAsyncCodec ? Process.THREAD_PRIORITY_DISPLAY : Process.THREAD_PRIORITY_URGENT_DISPLAY;
+
             case PreferenceConfiguration.FRAME_PACING_BALANCED:
             case PreferenceConfiguration.FRAME_PACING_MAX_SMOOTHNESS:
             case PreferenceConfiguration.FRAME_PACING_CAP_FPS:
@@ -4082,6 +4209,10 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     }
 
     private static int desiredCodecCallbackOsPriority(int pacing) {
+        // TV direct: the callback thread hands frames to the display itself (as moonlight-tcl does)
+        if (pacing == PreferenceConfiguration.FRAME_PACING_TV_DIRECT) {
+            return Process.THREAD_PRIORITY_URGENT_DISPLAY;
+        }
         // Keep callbacks below renderer/choreo. This thread must not preempt the pipeline.
         return Process.THREAD_PRIORITY_DISPLAY;
     }

@@ -106,6 +106,13 @@ To make 120 fps usable:
   dropped. TV game keeps one frame of buffer (up to three while Wi-Fi delivers bigger bunches);
   TV smooth keeps up to three, for video. With more frames than refreshes (120 fps on 60 Hz)
   both group the frames by their capture time on the PC, so the picture moves on evenly.
+- *TV direct* frame pacing (from moonlight-tcl): each decoded frame goes to the screen straight
+  from the decoder's callback, with no renderer thread or pacing in between. On a TCL C8K (same
+  platform) this put far more streams at a full 60 frames per second than a renderer thread did.
+  It skips the Wi-Fi bunching protection of TV game, so it suits a cable or a clean 5 GHz link;
+  the auto-tune measures it against TV game on your TV.
+- HDR streams start with the PC's last HDR metadata, so the decoder no longer restarts a moment
+  into every HDR stream.
 - The MediaTek decoder is set up with the low-latency options it really accepts. It also gets
   a bigger input buffer, so a large keyframe after packet loss no longer ends the stream.
 - A newer streaming core (moonlight-common-c) with fixes for loss recovery and faster error
@@ -114,6 +121,9 @@ To make 120 fps usable:
   controller input, and Wi-Fi that is kept awake between frames.
 - The TV is switched to the matching display mode and asked for its game picture mode.
 - Audio that keeps a small, self-adjusting cushion, so Wi-Fi hiccups don't crackle.
+- *Native AAudio* audio (Settings → Audio buffer, from moonlight-tcl): the sound goes from the
+  decoder straight to the TV's audio driver, at most 40 ms queued. Lowest delay, but no cushion
+  for Wi-Fi hiccups; it falls back to the normal audio path if AAudio does not open.
 
 **On the TV remote**
 - Back opens the stream menu (it used to go to the PC).
@@ -125,7 +135,7 @@ To make 120 fps usable:
   uneven steps, gaps where the PC captured nothing against frames that arrived late, the exact
   refresh rate against the PC's frame rate, network pauses, loss, round trip, decoder and audio
   figures, and the TV's memory and temperature.
-- **Auto-tune**: about 17 short test streams (formats first, then latency options on the best
+- **Auto-tune**: about 18 short test streams (formats first, then latency options on the best
   format), each scored for *smoothness*, *latency* and *picture*. At the end you can use the
   recommended settings or pick a test yourself. *Details* shows how each score came about.
 - **Latency test**: button-to-screen time, with `latency-test.html` open on the PC.
@@ -151,7 +161,7 @@ It runs in rounds:
    two with the same picture (1440p HEVC against 1440p AV1, say) the faster one wins unless it is
    clearly less smooth.
 3. **Latency options**, on the chosen format: TV smooth, the stock *lowest latency* pacing,
-   MediaTek's extra decoder keys, and sync decoding. Aggressive timing is not tested: by the
+   TV direct, MediaTek's extra decoder keys, and sync decoding. Aggressive timing is not tested: by the
    deadline the TV reports it can only make frames miss their refresh, and whether the real
    deadline is shorter can't be measured without a camera. (At 120 fps on 60 Hz lowest latency
    is left out: TV game already shows every frame at once there.)

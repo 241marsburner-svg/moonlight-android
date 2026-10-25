@@ -1650,8 +1650,9 @@ public final class TvDiagnostics {
             return "";
         }
         final StringBuilder b = new StringBuilder();
-        if (!PreferenceConfiguration.isTvPacing(prefs.framePacing)) {
-            b.append("frame pacing is not TV game/TV smooth; ");
+        if (!PreferenceConfiguration.isTvPacing(prefs.framePacing) &&
+                prefs.framePacing != PreferenceConfiguration.FRAME_PACING_TV_DIRECT) {
+            b.append("frame pacing is not TV game/TV smooth/TV direct; ");
         }
         if (prefs.videoUpscaleEnable || prefs.gpuPathMode) {
             b.append("GPU path/upscaling is on (extra delay on this GPU); ");
